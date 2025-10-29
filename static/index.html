@@ -225,6 +225,49 @@
         .success {
             color: #4ec9b0;
         }
+        .notification {
+            position: fixed;
+            top: 60px;
+            right: 2rem;
+            padding: 1rem 1.5rem;
+            background: #37373d;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            color: #d4d4d4;
+            z-index: 1000;
+            animation: slideIn 0.3s ease-out;
+            max-width: 400px;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
+        .notification.success {
+            border-left: 4px solid #4ec9b0;
+        }
+        .notification.error {
+            border-left: 4px solid #f48771;
+        }
+        .notification.info {
+            border-left: 4px solid #569cd6;
+        }
+        @keyframes slideIn {
+            from {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+            to {
+                transform: translateX(0);
+                opacity: 1;
+            }
+        }
+        @keyframes slideOut {
+            from {
+                transform: translateX(0);
+                opacity: 1;
+            }
+            to {
+                transform: translateX(400px);
+                opacity: 0;
+            }
+        }
     </style>
 </head>
 <body>
@@ -243,6 +286,7 @@
         <div class="sidebar">
             <div class="section-title">Branches</div>
             <button onclick="app.showNewBranchInput()">New Branch</button>
+            <button onclick="app.startNewTree()">Start New Tree</button>
             <div id="newBranchForm" style="display: none;">
                 <input type="text" id="newBranchName" class="new-branch-input" placeholder="Branch name...">
                 <button onclick="app.createBranch()">Create</button>
@@ -306,7 +350,7 @@
                 // Ping every 10 seconds
                 this.pingInterval = setInterval(() => {
                     this.pingClickHouse();
-                }, 10000);
+                }, 15000);
             },
 
             async pingClickHouse() {
@@ -380,13 +424,20 @@
 
             renderBranches() {
                 const list = document.getElementById('branchList');
-                list.innerHTML = this.branches.map(branch => `
-                    <div class="branch-item ${this.currentBranch && branch.id === this.currentBranch.id ? 'active' : ''}"
-                         onclick="app.selectBranch(${JSON.stringify(branch).replace(/"/g, '&quot;')})">
-                        <div class="branch-name">${branch.name}</div>
-                        <div class="version-time">${new Date(branch.createdAt).toLocaleString()}</div>
-                    </div>
-                `).join('');
+                list.innerHTML = this.branches.map(branch => {
+                    let branchInfo = '';
+                    if (branch.branchFromVersionId) {
+                        branchInfo = `<div style="color: #858585; font-size: 10px; margin-top: 0.2rem;">↳ from v${branch.branchFromVersionId.slice(0, 8)}</div>`;
+                    }
+                    return `
+                        <div class="branch-item ${this.currentBranch && branch.id === this.currentBranch.id ? 'active' : ''}"
+                             onclick="app.selectBranch(${JSON.stringify(branch).replace(/"/g, '&quot;')})">
+                            <div class="branch-name">${branch.name}</div>
+                            <div class="version-time">${new Date(branch.createdAt).toLocaleString()}</div>
+                            ${branchInfo}
+                        </div>
+                    `;
+                }).join('');
             },
 
             async selectBranch(branch) {
@@ -496,10 +547,23 @@
                         throw new Error(error);
                     }
 
-                    const version = await response.json();
+                    const data = await response.json();
+
+                    // Handle auto-branching
+                    if (data.autoBranched && data.newBranch) {
+                        console.log('Auto-branched to:', data.newBranch.name);
+                        // Reload branches and switch to new branch
+                        await this.loadBranches();
+                        this.selectBranch(data.newBranch);
+                        this.showNotification(`Created new branch: ${data.newBranch.name}`, 'success');
+                    } else {
+                        await this.loadHistory();
+                    }
+
+                    // Handle version (support both old and new response formats)
+                    const version = data.version || data;
                     this.currentVersion = version;
                     this.showResults(version.explainPlan, version);
-                    await this.loadHistory();
                 } catch (error) {
                     this.showError('Query failed: ' + error.message);
                 }
@@ -578,6 +642,24 @@
                 results.innerHTML = `<div class="error">Error: ${message}</div>`;
             },
 
+            showNotification(message, type = 'info') {
+                // Create notification element
+                const notification = document.createElement('div');
+                notification.className = `notification ${type}`;
+                notification.textContent = message;
+                document.body.appendChild(notification);
+
+                // Auto-remove after 4 seconds
+                setTimeout(() => {
+                    notification.style.animation = 'slideOut 0.3s ease-out';
+                    setTimeout(() => {
+                        if (notification.parentNode) {
+                            notification.parentNode.removeChild(notification);
+                        }
+                    }, 300);
+                }, 4000);
+            },
+
             showNewBranchInput() {
                 document.getElementById('newBranchForm').style.display = 'block';
                 document.getElementById('newBranchName').focus();
@@ -611,6 +693,36 @@
                     this.hideNewBranchInput();
                 } catch (error) {
                     this.showError('Failed to create branch: ' + error.message);
+                }
+            },
+
+            async startNewTree() {
+                const name = `tree-${new Date().toISOString().slice(0, 19).replace(/[T:]/g, '-')}`;
+
+                try {
+                    const response = await fetch('/api/branches', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: name,
+                            parentBranchId: '',
+                            createInitialVersion: true,
+                            initialQuery: '-- New query tree\n-- Start writing your ClickHouse query here\n\nSELECT 1'
+                        })
+                    });
+
+                    const branch = await response.json();
+                    await this.loadBranches();
+                    this.selectBranch(branch);
+                    this.showNotification(`Started new tree: ${branch.name}`, 'success');
+
+                    // Load the placeholder query into editor
+                    await this.loadHistory();
+                    if (this.history.length > 0) {
+                        this.loadVersion(this.history[0].id);
+                    }
+                } catch (error) {
+                    this.showError('Failed to start new tree: ' + error.message);
                 }
             },
 

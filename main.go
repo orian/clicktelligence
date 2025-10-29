@@ -35,16 +35,17 @@ type QueryVersion struct {
 }
 
 type Branch struct {
-	ID               string    `json:"id"`
-	Name             string    `json:"name"`
-	ParentBranchID   string    `json:"parentBranchId,omitempty"`
-	CurrentVersionID string    `json:"currentVersionId,omitempty"`
-	CreatedAt        time.Time `json:"createdAt"`
+	ID                  string    `json:"id"`
+	Name                string    `json:"name"`
+	ParentBranchID      string    `json:"parentBranchId,omitempty"`
+	BranchFromVersionID string    `json:"branchFromVersionId,omitempty"`
+	CurrentVersionID    string    `json:"currentVersionId,omitempty"`
+	CreatedAt           time.Time `json:"createdAt"`
 }
 
 // Storage interface
 type Storage interface {
-	CreateBranch(name, parentBranchID string) (*Branch, error)
+	CreateBranch(name, parentBranchID, branchFromVersionID string) (*Branch, error)
 	GetBranches() ([]*Branch, error)
 	GetBranch(id string) (*Branch, bool)
 	SaveVersion(version *QueryVersion) error
@@ -84,18 +85,48 @@ func (s *Server) handleGetBranches(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		Name           string `json:"name"`
-		ParentBranchID string `json:"parentBranchId"`
+		Name                string `json:"name"`
+		ParentBranchID      string `json:"parentBranchId"`
+		BranchFromVersionID string `json:"branchFromVersionId,omitempty"`
+		InitialQuery        string `json:"initialQuery,omitempty"`
+		CreateInitialVer    bool   `json:"createInitialVersion,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	branch, err := s.storage.CreateBranch(req.Name, req.ParentBranchID)
+	branch, err := s.storage.CreateBranch(req.Name, req.ParentBranchID, req.BranchFromVersionID)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
+	}
+
+	// Create initial version if requested
+	if req.CreateInitialVer {
+		placeholderQuery := req.InitialQuery
+		if placeholderQuery == "" {
+			placeholderQuery = "-- New query branch\n-- Start writing your ClickHouse query here\n\nSELECT 1"
+		}
+
+		// Create a placeholder version
+		queryHash := hashQuery(placeholderQuery)
+		version := &QueryVersion{
+			ID:             uuid.New().String(),
+			BranchID:       branch.ID,
+			Query:          placeholderQuery,
+			QueryHash:      queryHash,
+			ExplainResults: []ExplainResult{},
+			ExplainPlan:    "-- Initial placeholder version",
+			ExecutionStats: make(map[string]interface{}),
+			Timestamp:      time.Now(),
+		}
+
+		if err := s.storage.SaveVersion(version); err != nil {
+			log.Printf("Warning: failed to create initial version: %v", err)
+		} else {
+			log.Printf("Created initial version for new tree branch '%s'", branch.Name)
+		}
 	}
 
 	w.Header().Set("Content-Type", "application/json")
@@ -114,6 +145,26 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
+	}
+
+	// Check if we need to auto-branch (editing non-head version)
+	targetBranchID := req.BranchID
+	autoBranched := false
+
+	if req.ParentVersionID != "" {
+		branch, exists := s.storage.GetBranch(req.BranchID)
+		if exists && branch.CurrentVersionID != "" && branch.CurrentVersionID != req.ParentVersionID {
+			// User is editing a non-head version, auto-create new branch
+			newBranchName := fmt.Sprintf("branch-%s", time.Now().Format("2006-01-02-15:04:05"))
+			newBranch, err := s.storage.CreateBranch(newBranchName, req.BranchID, req.ParentVersionID)
+			if err != nil {
+				log.Printf("Failed to auto-create branch: %v", err)
+			} else {
+				targetBranchID = newBranch.ID
+				autoBranched = true
+				log.Printf("Auto-created branch '%s' (ID: %s) from version %s", newBranchName, newBranch.ID, req.ParentVersionID)
+			}
+		}
 	}
 
 	// Use default configs if none provided
@@ -197,7 +248,7 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	// Create version
 	version := &QueryVersion{
 		ID:              uuid.New().String(),
-		BranchID:        req.BranchID,
+		BranchID:        targetBranchID,
 		Query:           req.Query,
 		QueryHash:       queryHash,
 		ExplainResults:  explainResults,
@@ -212,8 +263,19 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	// Include branch info in response if auto-branched
+	response := map[string]interface{}{
+		"version":      version,
+		"autoBranched": autoBranched,
+	}
+
+	if autoBranched {
+		branch, _ := s.storage.GetBranch(targetBranchID)
+		response["newBranch"] = branch
+	}
+
 	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(version)
+	json.NewEncoder(w).Encode(response)
 }
 
 func (s *Server) handleGetHistory(w http.ResponseWriter, r *http.Request) {

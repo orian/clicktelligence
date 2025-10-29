@@ -30,6 +30,8 @@ The main purpose of clicktelligence is to provide an iterative, exploratory envi
 
 - Track every change to your queries
 - See performance metrics for each version
+- **Smart Automatic Branching**: When you edit an old version, the system automatically creates a new branch
+- **Start New Tree**: Begin fresh query experiments with placeholder templates
 - Create branches to explore different optimization paths without losing your work
 - Merge successful experiments back into the main branch
 - **Tag and star versions** for easy identification and organization

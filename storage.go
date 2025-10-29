@@ -79,7 +79,7 @@ func (s *DuckDBStorage) ensureMainBranch() error {
 
 	if count == 0 {
 		_, err = s.db.Exec(
-			"INSERT INTO branches (id, name, parent_branch_id, current_version_id, created_at) VALUES (?, ?, NULL, NULL, ?)",
+			"INSERT INTO branches (id, name, parent_branch_id, branch_from_version_id, current_version_id, created_at) VALUES (?, ?, NULL, NULL, NULL, ?)",
 			generateID(), "main", time.Now(),
 		)
 		return err
@@ -88,17 +88,18 @@ func (s *DuckDBStorage) ensureMainBranch() error {
 	return nil
 }
 
-func (s *DuckDBStorage) CreateBranch(name, parentBranchID string) (*Branch, error) {
+func (s *DuckDBStorage) CreateBranch(name, parentBranchID, branchFromVersionID string) (*Branch, error) {
 	branch := &Branch{
-		ID:             generateID(),
-		Name:           name,
-		ParentBranchID: parentBranchID,
-		CreatedAt:      time.Now(),
+		ID:                  generateID(),
+		Name:                name,
+		ParentBranchID:      parentBranchID,
+		BranchFromVersionID: branchFromVersionID,
+		CreatedAt:           time.Now(),
 	}
 
 	_, err := s.db.Exec(
-		"INSERT INTO branches (id, name, parent_branch_id, current_version_id, created_at) VALUES (?, ?, ?, NULL, ?)",
-		branch.ID, branch.Name, nullString(branch.ParentBranchID), branch.CreatedAt,
+		"INSERT INTO branches (id, name, parent_branch_id, branch_from_version_id, current_version_id, created_at) VALUES (?, ?, ?, ?, NULL, ?)",
+		branch.ID, branch.Name, nullString(branch.ParentBranchID), nullString(branch.BranchFromVersionID), branch.CreatedAt,
 	)
 	if err != nil {
 		return nil, err
@@ -109,7 +110,7 @@ func (s *DuckDBStorage) CreateBranch(name, parentBranchID string) (*Branch, erro
 
 func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
 	rows, err := s.db.Query(`
-		SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(current_version_id, ''), created_at
+		SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(branch_from_version_id, ''), COALESCE(current_version_id, ''), created_at
 		FROM branches
 		ORDER BY created_at DESC
 	`)
@@ -121,7 +122,7 @@ func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
 	var branches []*Branch
 	for rows.Next() {
 		var b Branch
-		if err := rows.Scan(&b.ID, &b.Name, &b.ParentBranchID, &b.CurrentVersionID, &b.CreatedAt); err != nil {
+		if err := rows.Scan(&b.ID, &b.Name, &b.ParentBranchID, &b.BranchFromVersionID, &b.CurrentVersionID, &b.CreatedAt); err != nil {
 			return nil, err
 		}
 		branches = append(branches, &b)
@@ -133,9 +134,9 @@ func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
 func (s *DuckDBStorage) GetBranch(id string) (*Branch, bool) {
 	var b Branch
 	err := s.db.QueryRow(
-		"SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(current_version_id, ''), created_at FROM branches WHERE id = ?",
+		"SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(branch_from_version_id, ''), COALESCE(current_version_id, ''), created_at FROM branches WHERE id = ?",
 		id,
-	).Scan(&b.ID, &b.Name, &b.ParentBranchID, &b.CurrentVersionID, &b.CreatedAt)
+	).Scan(&b.ID, &b.Name, &b.ParentBranchID, &b.BranchFromVersionID, &b.CurrentVersionID, &b.CreatedAt)
 
 	if err != nil {
 		return nil, false

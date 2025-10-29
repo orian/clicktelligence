@@ -35,6 +35,13 @@ func GetMigrations() []Migration {
 				CREATE INDEX IF NOT EXISTS idx_tags_key_value ON version_tags(tag_key, tag_value);
 			`,
 		},
+		{
+			Version:     2,
+			Description: "Add branch_from_version_id to branches table",
+			SQL: `
+				ALTER TABLE branches ADD COLUMN IF NOT EXISTS branch_from_version_id VARCHAR;
+			`,
+		},
 	}
 }
 
