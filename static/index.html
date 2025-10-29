@@ -1,0 +1,675 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Clicktelligence - ClickHouse Query Optimizer</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #252526;
+            padding: 0.5rem 2rem;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+        }
+        h1 {
+            font-size: 1.2rem;
+            color: #569cd6;
+            margin: 0;
+        }
+        .connection-status {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 12px;
+            color: #858585;
+        }
+        .status-indicator {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: #858585;
+        }
+        .status-indicator.connected {
+            background: #4ec9b0;
+            animation: pulse-green 2s ease-in-out infinite;
+        }
+        .status-indicator.disconnected {
+            background: #f48771;
+            animation: pulse-red 2s ease-in-out infinite;
+        }
+        .status-indicator.checking {
+            background: #858585;
+            animation: pulse-gray 1s ease-in-out infinite;
+        }
+        @keyframes pulse-green {
+            0%, 100% {
+                opacity: 1;
+                box-shadow: 0 0 0 0 rgba(78, 201, 176, 0.7);
+            }
+            50% {
+                opacity: 0.7;
+                box-shadow: 0 0 0 3px rgba(78, 201, 176, 0);
+            }
+        }
+        @keyframes pulse-red {
+            0%, 100% {
+                opacity: 1;
+                box-shadow: 0 0 0 0 rgba(244, 135, 113, 0.7);
+            }
+            50% {
+                opacity: 0.7;
+                box-shadow: 0 0 0 3px rgba(244, 135, 113, 0);
+            }
+        }
+        @keyframes pulse-gray {
+            0%, 100% {
+                opacity: 1;
+            }
+            50% {
+                opacity: 0.4;
+            }
+        }
+        .container {
+            display: flex;
+            flex: 1;
+            overflow: hidden;
+        }
+        .sidebar {
+            width: 300px;
+            background: #252526;
+            border-right: 1px solid #3e3e42;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        .main-content {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 1rem;
+            overflow: hidden;
+        }
+        .editor-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+        }
+        .results-section {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            min-height: 0;
+            margin-top: 1rem;
+        }
+        textarea {
+            flex: 1;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border: 1px solid #3e3e42;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 14px;
+            resize: none;
+        }
+        .results {
+            flex: 1;
+            background: #1e1e1e;
+            border: 1px solid #3e3e42;
+            padding: 1rem;
+            overflow-y: auto;
+            font-family: 'Courier New', monospace;
+            font-size: 12px;
+            white-space: pre-wrap;
+        }
+        button {
+            background: #0e639c;
+            color: white;
+            border: none;
+            padding: 0.5rem 1rem;
+            cursor: pointer;
+            font-size: 14px;
+            margin: 0.5rem 0.5rem 0.5rem 0;
+            border-radius: 2px;
+        }
+        button:hover {
+            background: #1177bb;
+        }
+        button:disabled {
+            background: #3e3e42;
+            cursor: not-allowed;
+        }
+        .branch-item {
+            padding: 0.5rem;
+            margin: 0.5rem 0;
+            background: #2d2d30;
+            border-left: 3px solid #569cd6;
+            cursor: pointer;
+        }
+        .branch-item:hover {
+            background: #3e3e42;
+        }
+        .branch-item.active {
+            border-left-color: #4ec9b0;
+            background: #37373d;
+        }
+        .branch-name {
+            font-weight: bold;
+            color: #569cd6;
+        }
+        .version-item {
+            padding: 0.5rem;
+            margin: 0.3rem 0;
+            background: #2d2d30;
+            font-size: 12px;
+            cursor: pointer;
+            border-left: 3px solid transparent;
+        }
+        .version-item:hover {
+            background: #3e3e42;
+        }
+        .version-item.active {
+            background: #37373d;
+            border-left-color: #4ec9b0;
+        }
+        .version-time {
+            color: #858585;
+            font-size: 11px;
+        }
+        .controls {
+            display: flex;
+            align-items: center;
+            padding: 0.5rem 0;
+            border-bottom: 1px solid #3e3e42;
+            margin-bottom: 0.5rem;
+        }
+        .section-title {
+            font-size: 14px;
+            font-weight: bold;
+            margin-bottom: 0.5rem;
+            color: #4ec9b0;
+        }
+        .section-version {
+            font-size: 12px;
+            color: #858585;
+        }
+        .new-branch-input {
+            background: #3c3c3c;
+            border: 1px solid #3e3e42;
+            color: #d4d4d4;
+            padding: 0.5rem;
+            width: 100%;
+            margin: 0.5rem 0;
+        }
+        .error {
+            color: #f48771;
+            padding: 0.5rem;
+            background: #3c1e1e;
+            border: 1px solid #5a1e1e;
+            margin: 0.5rem 0;
+        }
+        .success {
+            color: #4ec9b0;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <div>
+            <h1>Clicktelligence</h1>
+            <p style="color: #858585; font-size: 11px; margin: 0;">ClickHouse Query Optimization Tool</p>
+        </div>
+        <div class="connection-status">
+            <span id="connectionInfo">Connecting...</span>
+            <div class="status-indicator" id="statusIndicator"></div>
+        </div>
+    </header>
+
+    <div class="container">
+        <div class="sidebar">
+            <div class="section-title">Branches</div>
+            <button onclick="app.showNewBranchInput()">New Branch</button>
+            <div id="newBranchForm" style="display: none;">
+                <input type="text" id="newBranchName" class="new-branch-input" placeholder="Branch name...">
+                <button onclick="app.createBranch()">Create</button>
+                <button onclick="app.hideNewBranchInput()">Cancel</button>
+            </div>
+            <div id="branchList"></div>
+
+            <div class="section-title" style="margin-top: 1rem;">History</div>
+            <div id="historyList"></div>
+        </div>
+
+        <div class="main-content">
+            <div class="editor-section">
+                <div class="controls">
+                    <span class="section-title">Query Editor</span>
+                    <span id="currentBranch" style="color: #858585; margin-left: 1rem;"></span>
+                    <span style="color: #858585; margin-left: auto; font-size: 12px;">Ctrl+Enter to run</span>
+                </div>
+                <textarea id="queryEditor" placeholder="Paste your ClickHouse query here..."></textarea>
+                <div style="padding: 0.5rem 0;">
+                    <button onclick="app.explainQuery()">Run EXPLAIN (Ctrl+Enter)</button>
+                    <button id="forceAnalyzerBtn" onclick="app.explainQuery(true)" style="display: none;">
+                        SET enable_analyzer=1 and EXPLAIN
+                    </button>
+                    <button onclick="app.clearEditor()">Clear</button>
+                </div>
+            </div>
+
+            <div class="results-section">
+                <div class="section-title">Results</div>
+                <div class="section-version"> # version</div>
+                <div id="results" class="results">No results yet. Run EXPLAIN to see query analysis.</div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        const app = {
+            currentBranch: null,
+            currentVersion: null,
+            branches: [],
+            history: [],
+            serverSettings: {},
+            pingInterval: null,
+
+            async init() {
+                await this.loadServerSettings();
+                await this.loadBranches();
+                if (this.branches.length > 0) {
+                    this.selectBranch(this.branches.find(b => b.name === 'main') || this.branches[0]);
+                }
+
+                // Start periodic ping
+                this.startPing();
+            },
+
+            startPing() {
+                // Initial ping
+                this.pingClickHouse();
+
+                // Ping every 10 seconds
+                this.pingInterval = setInterval(() => {
+                    this.pingClickHouse();
+                }, 10000);
+            },
+
+            async pingClickHouse() {
+                const indicator = document.getElementById('statusIndicator');
+                indicator.className = 'status-indicator checking';
+
+                try {
+                    const response = await fetch('/api/server/ping');
+                    const data = await response.json();
+
+                    this.updateConnectionStatus(data.connected, data.error || '');
+                } catch (error) {
+                    console.error('Ping failed:', error);
+                    this.updateConnectionStatus(false, error.message);
+                }
+            },
+
+            async loadServerSettings() {
+                try {
+                    const response = await fetch('/api/server/settings');
+                    this.serverSettings = await response.json();
+                    console.log('Server settings:', this.serverSettings);
+                    this.updateAnalyzerButton();
+                    this.updateConnectionStatus(true);
+                } catch (error) {
+                    console.error('Failed to load server settings:', error);
+                    this.serverSettings = { enable_analyzer: '0' }; // Default to disabled
+                    this.updateAnalyzerButton();
+                    this.updateConnectionStatus(false, error.message);
+                }
+            },
+
+            updateConnectionStatus(connected, errorMsg = '') {
+                const indicator = document.getElementById('statusIndicator');
+                const info = document.getElementById('connectionInfo');
+
+                if (connected) {
+                    indicator.className = 'status-indicator connected';
+                    const host = this.serverSettings.host || 'localhost:9000';
+                    const db = this.serverSettings.database || 'default';
+                    info.textContent = `${host} / ${db}`;
+                    info.style.color = '#4ec9b0';
+                } else {
+                    indicator.className = 'status-indicator disconnected';
+                    info.textContent = 'ClickHouse Disconnected';
+                    info.style.color = '#f48771';
+                    if (errorMsg) {
+                        console.error('Connection error:', errorMsg);
+                    }
+                }
+            },
+
+            updateAnalyzerButton() {
+                const btn = document.getElementById('forceAnalyzerBtn');
+                if (this.serverSettings.enable_analyzer === '0') {
+                    btn.style.display = 'inline-block';
+                } else {
+                    btn.style.display = 'none';
+                }
+            },
+
+            async loadBranches() {
+                try {
+                    const response = await fetch('/api/branches');
+                    this.branches = await response.json();
+                    this.renderBranches();
+                } catch (error) {
+                    this.showError('Failed to load branches: ' + error.message);
+                }
+            },
+
+            renderBranches() {
+                const list = document.getElementById('branchList');
+                list.innerHTML = this.branches.map(branch => `
+                    <div class="branch-item ${this.currentBranch && branch.id === this.currentBranch.id ? 'active' : ''}"
+                         onclick="app.selectBranch(${JSON.stringify(branch).replace(/"/g, '&quot;')})">
+                        <div class="branch-name">${branch.name}</div>
+                        <div class="version-time">${new Date(branch.createdAt).toLocaleString()}</div>
+                    </div>
+                `).join('');
+            },
+
+            async selectBranch(branch) {
+                this.currentBranch = branch;
+                document.getElementById('currentBranch').textContent = `Branch: ${branch.name}`;
+                this.renderBranches();
+                await this.loadHistory();
+            },
+
+            async loadHistory() {
+                if (!this.currentBranch) return;
+
+                try {
+                    const response = await fetch(`/api/history?branchId=${this.currentBranch.id}`);
+                    this.history = await response.json();
+
+                    // Tags are now included in the history response
+                    this.renderHistory();
+                } catch (error) {
+                    this.showError('Failed to load history: ' + error.message);
+                }
+            },
+
+            renderHistory() {
+                const list = document.getElementById('historyList');
+                if (this.history.length === 0) {
+                    list.innerHTML = '<div style="color: #858585; padding: 0.5rem;">No history yet</div>';
+                    return;
+                }
+
+                list.innerHTML = this.history
+                    .sort((a, b) => new Date(b.timestamp) - new Date(a.timestamp))
+                    .map(version => {
+                        const isActive = this.currentVersion && version.id === this.currentVersion.id;
+                        const isStarred = version.tags && version.tags.some(t => t.tagKey === 'system:starred');
+                        const starIcon = isStarred ? '⭐' : '☆';
+
+                        // Get non-system tags for display
+                        const displayTags = version.tags ?
+                            version.tags.filter(t => !t.tagKey.startsWith('system:')) : [];
+
+                        const tagsHtml = displayTags.length > 0 ?
+                            `<div style="margin-top: 0.3rem; display: flex; gap: 0.3rem; flex-wrap: wrap;">
+                                ${displayTags.map(tag => {
+                                    const tagText = tag.tagValue ? `${tag.tagKey}=${tag.tagValue}` : tag.tagKey;
+                                    return `<span style="background: #3e3e42; color: #d4d4d4; padding: 0.1rem 0.3rem; font-size: 10px; border-radius: 2px;">${tagText}</span>`;
+                                }).join('')}
+                            </div>` : '';
+
+                        return `
+                        <div class="version-item ${isActive ? 'active' : ''}">
+                            <div style="display: flex; align-items: center; justify-content: space-between;">
+                                <div style="color: #4ec9b0; flex: 1;" onclick="app.loadVersion('${version.id}')">Version ${version.id.slice(0, 8)}</div>
+                                <button onclick="event.stopPropagation(); app.toggleStar('${version.id}')"
+                                        style="background: transparent; border: none; color: ${isStarred ? '#ffd700' : '#858585'}; cursor: pointer; font-size: 16px; padding: 0;">
+                                    ${starIcon}
+                                </button>
+                            </div>
+                            <div class="version-time" onclick="app.loadVersion('${version.id}')">${new Date(version.timestamp).toLocaleString()}</div>
+                            <div style="color: #858585; font-size: 11px; margin-top: 0.2rem;" onclick="app.loadVersion('${version.id}')">
+                                ${version.query.slice(0, 50)}...
+                            </div>
+                            ${tagsHtml}
+                        </div>
+                    `}).join('');
+            },
+
+            loadVersion(versionId) {
+                const version = this.history.find(v => v.id === versionId);
+                if (version) {
+                    this.currentVersion = version;
+                    document.getElementById('queryEditor').value = version.query;
+                    this.showResults(version.explainPlan, version);
+                    this.renderHistory(); // Re-render to update highlighting
+                }
+            },
+
+            async explainQuery(forceAnalyzer = false) {
+                if (!this.currentBranch) {
+                    this.showError('Please select a branch first');
+                    return;
+                }
+
+                const query = document.getElementById('queryEditor').value.trim();
+                if (!query) {
+                    this.showError('Please enter a query');
+                    return;
+                }
+
+                this.showResults('Running EXPLAIN...');
+
+                try {
+                    const response = await fetch('/api/query/explain', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            branchId: this.currentBranch.id,
+                            query: query,
+                            parentVersionId: this.currentVersion ? this.currentVersion.id : '',
+                            forceAnalyzer: forceAnalyzer,
+                            serverSettings: this.serverSettings
+                        })
+                    });
+
+                    if (!response.ok) {
+                        const error = await response.text();
+                        throw new Error(error);
+                    }
+
+                    const version = await response.json();
+                    this.currentVersion = version;
+                    this.showResults(version.explainPlan, version);
+                    await this.loadHistory();
+                } catch (error) {
+                    this.showError('Query failed: ' + error.message);
+                }
+            },
+
+            showResults(text, version = null) {
+                const results = document.getElementById('results');
+
+                if (version && version.explainResults && version.explainResults.length > 0) {
+                    // Show multiple EXPLAIN results with tabs
+                    let versionHtml = `<div style="color: #858585; margin-bottom: 1rem;">Version: ${version.id}, Query Hash: ${version.queryHash}, Timestamp: ${new Date(version.timestamp).toLocaleString()}</div>`;
+                    document.getElementsByClassName(`section-version`)[0].innerHTML = versionHtml;
+
+                    // Create tabs for each EXPLAIN type
+                    let html = '<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #3e3e42;">';
+                    version.explainResults.forEach((result, idx) => {
+                        const tabId = `explain-tab-${idx}`;
+                        html += `<button class="explain-tab ${idx === 0 ? 'active' : ''}"
+                                        onclick="app.switchExplainTab(${idx})"
+                                        style="background: ${idx === 0 ? '#37373d' : 'transparent'};
+                                               border: none;
+                                               color: ${result.error ? '#f48771' : '#4ec9b0'};
+                                               padding: 0.5rem 1rem;
+                                               cursor: pointer;
+                                               border-bottom: 2px solid ${idx === 0 ? '#4ec9b0' : 'transparent'};">
+                                    ${result.type}${result.error ? ' ⚠' : ''}
+                                </button>`;
+                    });
+                    html += '</div>';
+
+                    // Create content for each tab
+                    version.explainResults.forEach((result, idx) => {
+                        const display = idx === 0 ? 'block' : 'none';
+                        const content = result.error ? `ERROR: ${result.error}` : result.output;
+                        html += `<pre class="explain-content" id="explain-content-${idx}"
+                                      style="display: ${display}; margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace;">${content}</pre>`;
+                    });
+
+                    results.innerHTML = html;
+                    this.currentExplainResults = version.explainResults;
+                } else if (version) {
+                    // Fallback to legacy format
+                    let output = `Version: ${version.id}\n` +
+                                 `Query Hash: ${version.queryHash}\n` +
+                                 `Timestamp: ${new Date(version.timestamp).toLocaleString()}\n\n` +
+                                 `EXPLAIN Plan:\n${text || version.explainPlan}`;
+                    results.textContent = output;
+                } else {
+                    results.textContent = text;
+                }
+            },
+
+            switchExplainTab(idx) {
+                // Hide all tabs
+                document.querySelectorAll('.explain-content').forEach(el => el.style.display = 'none');
+                document.querySelectorAll('.explain-tab').forEach(el => {
+                    el.style.background = 'transparent';
+                    el.style.borderBottom = '2px solid transparent';
+                });
+
+                // Show selected tab
+                const content = document.getElementById(`explain-content-${idx}`);
+                if (content) {
+                    content.style.display = 'block';
+                }
+
+                const tabs = document.querySelectorAll('.explain-tab');
+                if (tabs[idx]) {
+                    tabs[idx].style.background = '#37373d';
+                    tabs[idx].style.borderBottom = '2px solid #4ec9b0';
+                }
+            },
+
+            showError(message) {
+                const results = document.getElementById('results');
+                results.innerHTML = `<div class="error">Error: ${message}</div>`;
+            },
+
+            showNewBranchInput() {
+                document.getElementById('newBranchForm').style.display = 'block';
+                document.getElementById('newBranchName').focus();
+            },
+
+            hideNewBranchInput() {
+                document.getElementById('newBranchForm').style.display = 'none';
+                document.getElementById('newBranchName').value = '';
+            },
+
+            async createBranch() {
+                const name = document.getElementById('newBranchName').value.trim();
+                if (!name) {
+                    alert('Please enter a branch name');
+                    return;
+                }
+
+                try {
+                    const response = await fetch('/api/branches', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            name: name,
+                            parentBranchId: this.currentBranch ? this.currentBranch.id : ''
+                        })
+                    });
+
+                    const branch = await response.json();
+                    await this.loadBranches();
+                    this.selectBranch(branch);
+                    this.hideNewBranchInput();
+                } catch (error) {
+                    this.showError('Failed to create branch: ' + error.message);
+                }
+            },
+
+            clearEditor() {
+                document.getElementById('queryEditor').value = '';
+                document.getElementById('results').textContent = 'No results yet. Run EXPLAIN to see query analysis.';
+                document.getElementsByClassName('section-version')[0].innerHTML = '# version';
+                this.currentVersion = null;
+                this.renderHistory(); // Re-render to remove highlighting
+            },
+
+            async toggleStar(versionId) {
+                try {
+                    const response = await fetch(`/api/versions/${versionId}/star`, {
+                        method: 'POST'
+                    });
+
+                    if (!response.ok) {
+                        throw new Error('Failed to toggle star');
+                    }
+
+                    // Reload history to update star status
+                    await this.loadHistory();
+                } catch (error) {
+                    this.showError('Failed to toggle star: ' + error.message);
+                }
+            }
+        };
+
+        // Initialize app when page loads
+        window.addEventListener('DOMContentLoaded', () => {
+            app.init();
+
+            // Setup keyboard shortcuts for query editor
+            const queryEditor = document.getElementById('queryEditor');
+
+            queryEditor.addEventListener('keydown', (e) => {
+                // Handle Tab key for indentation
+                if (e.key === 'Tab') {
+                    e.preventDefault();
+                    const start = queryEditor.selectionStart;
+                    const end = queryEditor.selectionEnd;
+                    const value = queryEditor.value;
+
+                    // Insert tab character (or spaces)
+                    const tab = '    '; // 4 spaces
+                    queryEditor.value = value.substring(0, start) + tab + value.substring(end);
+
+                    // Move cursor after the inserted tab
+                    queryEditor.selectionStart = queryEditor.selectionEnd = start + tab.length;
+                }
+
+                // Handle Ctrl+Enter to run EXPLAIN
+                if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+                    e.preventDefault();
+                    app.explainQuery();
+                }
+            });
+        });
+    </script>
+</body>
+</html>
