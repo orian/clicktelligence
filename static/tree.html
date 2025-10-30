@@ -1,0 +1,463 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Branch History Graph - Clicktelligence</title>
+    <style>
+        * {
+            margin: 0;
+            padding: 0;
+            box-sizing: border-box;
+        }
+        body {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            background: #1e1e1e;
+            color: #d4d4d4;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+        header {
+            background: #252526;
+            padding: 0.5rem 2rem;
+            border-bottom: 1px solid #3e3e42;
+        }
+        h1 {
+            font-size: 1.2rem;
+            color: #569cd6;
+        }
+        .container {
+            flex: 1;
+            display: flex;
+            overflow: hidden;
+        }
+        .legend {
+            width: 250px;
+            background: #252526;
+            border-right: 1px solid #3e3e42;
+            padding: 1rem;
+            overflow-y: auto;
+        }
+        .legend-title {
+            font-size: 14px;
+            font-weight: bold;
+            color: #4ec9b0;
+            margin-bottom: 1rem;
+        }
+        .legend-item {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-bottom: 0.5rem;
+            font-size: 12px;
+        }
+        .legend-color {
+            width: 16px;
+            height: 16px;
+            border-radius: 50%;
+            border: 2px solid #3e3e42;
+        }
+        .graph-container {
+            flex: 1;
+            overflow: auto;
+            position: relative;
+        }
+        svg {
+            display: block;
+        }
+        .version-node {
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+        .version-node:hover circle {
+            stroke-width: 3px;
+            filter: brightness(1.3);
+        }
+        .version-node text {
+            pointer-events: none;
+            user-select: none;
+        }
+        .branch-line {
+            fill: none;
+            stroke-width: 2;
+            opacity: 0.3;
+        }
+        .edge {
+            fill: none;
+            stroke: #858585;
+            stroke-width: 2;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            background: rgba(0, 0, 0, 0.7);
+            z-index: 1000;
+            align-items: center;
+            justify-content: center;
+        }
+        .modal.active {
+            display: flex;
+        }
+        .modal-content {
+            background: #252526;
+            border: 1px solid #3e3e42;
+            border-radius: 4px;
+            padding: 2rem;
+            max-width: 600px;
+            width: 90%;
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        .modal-header {
+            font-size: 1.2rem;
+            color: #569cd6;
+            margin-bottom: 1rem;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+        }
+        .modal-close {
+            background: transparent;
+            border: none;
+            color: #d4d4d4;
+            font-size: 1.5rem;
+            cursor: pointer;
+            padding: 0;
+            width: 30px;
+            height: 30px;
+        }
+        .modal-close:hover {
+            color: #f48771;
+        }
+        .modal-section {
+            margin-bottom: 1rem;
+        }
+        .modal-label {
+            color: #858585;
+            font-size: 12px;
+            margin-bottom: 0.3rem;
+        }
+        .modal-value {
+            color: #d4d4d4;
+            font-size: 14px;
+        }
+        .version-badge {
+            display: inline-block;
+            padding: 0.2rem 0.5rem;
+            border-radius: 3px;
+            font-size: 11px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <header>
+        <h1>Branch History Graph</h1>
+        <p style="color: #858585; font-size: 11px; margin: 0;">Query Optimization Timeline</p>
+    </header>
+
+    <div class="container">
+        <div class="legend">
+            <div class="legend-title">Branches</div>
+            <div id="legendItems"></div>
+        </div>
+
+        <div class="graph-container">
+            <svg id="graph"></svg>
+        </div>
+    </div>
+
+    <div class="modal" id="versionModal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <span id="modalTitle">Version Details</span>
+                <button class="modal-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div id="modalBody"></div>
+        </div>
+    </div>
+
+    <script>
+        // Test data structure
+        const testData = {
+            versions: [
+                // Main branch: v0 through v10
+                { id: 0, branch: 'main', parentId: null },
+                { id: 1, branch: 'main', parentId: 0 },
+                { id: 2, branch: 'main', parentId: 1 },
+                { id: 3, branch: 'main', parentId: 2 },
+                { id: 4, branch: 'main', parentId: 3 },
+                { id: 5, branch: 'main', parentId: 4 },
+                { id: 6, branch: 'main', parentId: 5 },
+                { id: 7, branch: 'main', parentId: 6 },
+                { id: 8, branch: 'main', parentId: 7 },
+                { id: 9, branch: 'main', parentId: 8 },
+                { id: 10, branch: 'main', parentId: 9 },
+
+                // Test branch: branches from main v2, creates v11
+                { id: 11, branch: 'test', parentId: 2 },
+
+                // Chill branch: branches from main v4, creates v12, v13, v14
+                { id: 12, branch: 'chill', parentId: 4 },
+                { id: 13, branch: 'chill', parentId: 12 },
+                { id: 14, branch: 'chill', parentId: 13 },
+
+                // Chillier branch: branches from chill v12, creates v15
+                { id: 15, branch: 'chillier', parentId: 12 },
+
+                // Experiment branch: branches from main v8, creates v16
+                { id: 16, branch: 'experiment', parentId: 8 }
+            ],
+            branches: {
+                'main': { name: 'main', color: '#569cd6' },
+                'test': { name: 'test', color: '#4ec9b0' },
+                'chill': { name: 'chill', color: '#dcdcaa' },
+                'chillier': { name: 'chillier', color: '#ce9178' },
+                'experiment': { name: 'experiment', color: '#c586c0' }
+            }
+        };
+
+        // Graph configuration
+        const config = {
+            nodeRadius: 8,
+            verticalSpacing: 60,
+            horizontalSpacing: 120,
+            padding: { top: 40, right: 40, bottom: 40, left: 40 }
+        };
+
+        // Build graph data structure
+        function buildGraph(data) {
+            const graph = {
+                nodes: [],
+                edges: [],
+                layers: []
+            };
+
+            // Create node map
+            const nodeMap = new Map();
+            data.versions.forEach(v => {
+                nodeMap.set(v.id, {
+                    ...v,
+                    children: [],
+                    x: 0,
+                    y: 0,
+                    layer: 0
+                });
+            });
+
+            // Build parent-child relationships
+            data.versions.forEach(v => {
+                if (v.parentId !== null) {
+                    const parent = nodeMap.get(v.parentId);
+                    if (parent) {
+                        parent.children.push(v.id);
+                        graph.edges.push({ from: v.parentId, to: v.id });
+                    }
+                }
+            });
+
+            // Assign layers (vertical position based on distance from root)
+            function assignLayers(nodeId, layer) {
+                const node = nodeMap.get(nodeId);
+                node.layer = Math.max(node.layer, layer);
+                node.children.forEach(childId => assignLayers(childId, layer + 1));
+            }
+            assignLayers(0, 0);
+
+            // Group nodes by layer
+            const maxLayer = Math.max(...Array.from(nodeMap.values()).map(n => n.layer));
+            for (let i = 0; i <= maxLayer; i++) {
+                graph.layers[i] = Array.from(nodeMap.values()).filter(n => n.layer === i);
+            }
+
+            // Assign horizontal positions (branch lanes)
+            const branchLanes = new Map();
+            let laneCounter = 0;
+
+            function assignLane(nodeId, forcedLane = null) {
+                const node = nodeMap.get(nodeId);
+                const branchName = node.branch;
+
+                if (forcedLane !== null) {
+                    node.lane = forcedLane;
+                    branchLanes.set(branchName, forcedLane);
+                } else if (branchLanes.has(branchName)) {
+                    node.lane = branchLanes.get(branchName);
+                } else {
+                    node.lane = laneCounter++;
+                    branchLanes.set(branchName, node.lane);
+                }
+
+                node.children.forEach(childId => {
+                    const child = nodeMap.get(childId);
+                    if (child.branch === branchName) {
+                        assignLane(childId, node.lane);
+                    } else {
+                        assignLane(childId);
+                    }
+                });
+            }
+            assignLane(0, 0);
+
+            // Calculate actual positions
+            nodeMap.forEach(node => {
+                node.x = config.padding.left + node.lane * config.horizontalSpacing;
+                node.y = config.padding.top + node.layer * config.verticalSpacing;
+            });
+
+            graph.nodes = Array.from(nodeMap.values());
+            graph.width = config.padding.left + config.padding.right +
+                          (laneCounter) * config.horizontalSpacing;
+            graph.height = config.padding.top + config.padding.bottom +
+                           maxLayer * config.verticalSpacing;
+
+            return graph;
+        }
+
+        // Render the graph
+        function renderGraph(graph) {
+            const svg = document.getElementById('graph');
+            svg.setAttribute('width', graph.width);
+            svg.setAttribute('height', graph.height);
+            svg.innerHTML = '';
+
+            // Draw edges
+            graph.edges.forEach(edge => {
+                const from = graph.nodes.find(n => n.id === edge.from);
+                const to = graph.nodes.find(n => n.id === edge.to);
+
+                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
+                line.setAttribute('class', 'edge');
+                line.setAttribute('x1', from.x);
+                line.setAttribute('y1', from.y);
+                line.setAttribute('x2', to.x);
+                line.setAttribute('y2', to.y);
+
+                // Different style for branch creation
+                if (from.branch !== to.branch) {
+                    line.setAttribute('stroke-dasharray', '5,5');
+                    line.setAttribute('stroke', testData.branches[to.branch].color);
+                    line.setAttribute('opacity', '0.6');
+                }
+
+                svg.appendChild(line);
+            });
+
+            // Draw nodes
+            graph.nodes.forEach(node => {
+                const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                g.setAttribute('class', 'version-node');
+                g.setAttribute('data-id', node.id);
+                g.style.cursor = 'pointer';
+
+                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                circle.setAttribute('cx', node.x);
+                circle.setAttribute('cy', node.y);
+                circle.setAttribute('r', config.nodeRadius);
+                circle.setAttribute('fill', testData.branches[node.branch].color);
+                circle.setAttribute('stroke', '#d4d4d4');
+                circle.setAttribute('stroke-width', '2');
+
+                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                text.setAttribute('x', node.x);
+                text.setAttribute('y', node.y - 15);
+                text.setAttribute('text-anchor', 'middle');
+                text.setAttribute('fill', '#d4d4d4');
+                text.setAttribute('font-size', '11px');
+                text.textContent = `v${node.id}`;
+
+                g.appendChild(circle);
+                g.appendChild(text);
+                g.onclick = () => showVersionDetails(node);
+
+                svg.appendChild(g);
+            });
+        }
+
+        // Show version details in modal
+        function showVersionDetails(node) {
+            const modal = document.getElementById('versionModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+
+            modalTitle.textContent = `Version ${node.id}`;
+
+            const branch = testData.branches[node.branch];
+            const parent = node.parentId !== null ?
+                testData.versions.find(v => v.id === node.parentId) : null;
+
+            modalBody.innerHTML = `
+                <div class="modal-section">
+                    <div class="modal-label">Branch</div>
+                    <div class="modal-value">
+                        <span class="version-badge" style="background: ${branch.color}20; color: ${branch.color}; border: 1px solid ${branch.color}">
+                            ${branch.name}
+                        </span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Version ID</div>
+                    <div class="modal-value">${node.id}</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Parent Version</div>
+                    <div class="modal-value">${parent ? `v${parent.id} (${parent.branch})` : 'None (root)'}</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Layer</div>
+                    <div class="modal-value">${node.layer}</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Children</div>
+                    <div class="modal-value">${node.children.length > 0 ? node.children.map(c => `v${c}`).join(', ') : 'None'}</div>
+                </div>
+                ${parent && parent.branch !== node.branch ? `
+                <div class="modal-section">
+                    <div class="modal-label">Branch Point</div>
+                    <div class="modal-value" style="color: #4ec9b0">Branched from ${parent.branch} at v${parent.id}</div>
+                </div>
+                ` : ''}
+            `;
+
+            modal.classList.add('active');
+        }
+
+        function closeModal() {
+            document.getElementById('versionModal').classList.remove('active');
+        }
+
+        // Render legend
+        function renderLegend() {
+            const legendItems = document.getElementById('legendItems');
+            Object.values(testData.branches).forEach(branch => {
+                const item = document.createElement('div');
+                item.className = 'legend-item';
+                item.innerHTML = `
+                    <div class="legend-color" style="background: ${branch.color}"></div>
+                    <span>${branch.name}</span>
+                `;
+                legendItems.appendChild(item);
+            });
+        }
+
+        // Close modal on background click
+        document.getElementById('versionModal').addEventListener('click', (e) => {
+            if (e.target.id === 'versionModal') {
+                closeModal();
+            }
+        });
+
+        // Initialize
+        window.addEventListener('DOMContentLoaded', () => {
+            const graph = buildGraph(testData);
+            renderGraph(graph);
+            renderLegend();
+        });
+    </script>
+</body>
+</html>
