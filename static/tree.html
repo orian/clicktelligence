@@ -78,6 +78,16 @@
             pointer-events: none;
             user-select: none;
         }
+        .collapsed-node {
+            cursor: pointer;
+        }
+        .collapsed-node:hover circle {
+            filter: brightness(1.3);
+        }
+        .collapsed-node text {
+            pointer-events: none;
+            user-select: none;
+        }
         .branch-line {
             fill: none;
             stroke-width: 2;
@@ -153,6 +163,24 @@
             font-size: 11px;
             font-weight: bold;
         }
+        .controls {
+            padding: 1rem;
+            background: #252526;
+            border-bottom: 1px solid #3e3e42;
+            display: flex;
+            gap: 1rem;
+            align-items: center;
+        }
+        .controls label {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            font-size: 12px;
+            cursor: pointer;
+        }
+        .controls input[type="checkbox"] {
+            cursor: pointer;
+        }
     </style>
 </head>
 <body>
@@ -160,6 +188,13 @@
         <h1>Branch History Graph</h1>
         <p style="color: #858585; font-size: 11px; margin: 0;">Query Optimization Timeline</p>
     </header>
+
+    <div class="controls">
+        <label>
+            <input type="checkbox" id="collapseToggle" onchange="toggleCollapse()">
+            Collapse (show only heads & branch points)
+        </label>
+    </div>
 
     <div class="container">
         <div class="legend">
@@ -198,6 +233,8 @@
                 { id: 8, branch: 'main', parentId: 7 },
                 { id: 9, branch: 'main', parentId: 8 },
                 { id: 10, branch: 'main', parentId: 9 },
+                { id: 17, branch: 'main', parentId: 10 },
+                { id: 18, branch: 'main', parentId: 17 },
 
                 // Test branch: branches from main v2, creates v11
                 { id: 11, branch: 'test', parentId: 2 },
@@ -225,8 +262,9 @@
         // Graph configuration
         const config = {
             nodeRadius: 8,
-            verticalSpacing: 60,
-            horizontalSpacing: 120,
+            verticalSpacing: 30,
+            horizontalSpacing: 50,
+            branchPointSpacing: 20, // Extra spacing when branching
             padding: { top: 40, right: 40, bottom: 40, left: 40 }
         };
 
@@ -275,48 +313,253 @@
                 graph.layers[i] = Array.from(nodeMap.values()).filter(n => n.layer === i);
             }
 
-            // Assign horizontal positions (branch lanes)
+            // Assign horizontal positions (branch lanes) with lane packing
+            // First, count versions per branch and get layer ranges
+            const branchInfo = new Map();
+            nodeMap.forEach(node => {
+                if (!branchInfo.has(node.branch)) {
+                    branchInfo.set(node.branch, {
+                        count: 0,
+                        minLayer: Infinity,
+                        maxLayer: -Infinity,
+                        nodes: []
+                    });
+                }
+                const info = branchInfo.get(node.branch);
+                info.count++;
+                info.minLayer = Math.min(info.minLayer, node.layer);
+                info.maxLayer = Math.max(info.maxLayer, node.layer);
+                info.nodes.push(node);
+            });
+
+            // Sort branches by version count (longest first)
+            const sortedBranches = Array.from(branchInfo.entries())
+                .sort((a, b) => b[1].count - a[1].count) // Sort descending by count
+                .map(entry => ({ name: entry[0], ...entry[1] }));
+
+            // Track which lanes are occupied at each layer
+            const laneOccupancy = new Map(); // Map<layer, Set<lane>>
+
+            function isLaneAvailable(lane, minLayer, maxLayer) {
+                for (let layer = minLayer; layer <= maxLayer; layer++) {
+                    if (laneOccupancy.has(layer) && laneOccupancy.get(layer).has(lane)) {
+                        return false;
+                    }
+                }
+                return true;
+            }
+
+            function occupyLane(lane, minLayer, maxLayer) {
+                for (let layer = minLayer; layer <= maxLayer; layer++) {
+                    if (!laneOccupancy.has(layer)) {
+                        laneOccupancy.set(layer, new Set());
+                    }
+                    laneOccupancy.get(layer).add(lane);
+                }
+            }
+
+            // Assign lanes to branches (pack into leftmost available)
             const branchLanes = new Map();
-            let laneCounter = 0;
+            let maxLane = -1;
 
-            function assignLane(nodeId, forcedLane = null) {
-                const node = nodeMap.get(nodeId);
-                const branchName = node.branch;
-
-                if (forcedLane !== null) {
-                    node.lane = forcedLane;
-                    branchLanes.set(branchName, forcedLane);
-                } else if (branchLanes.has(branchName)) {
-                    node.lane = branchLanes.get(branchName);
-                } else {
-                    node.lane = laneCounter++;
-                    branchLanes.set(branchName, node.lane);
+            sortedBranches.forEach(branchData => {
+                // Find leftmost available lane for this branch
+                let assignedLane = 0;
+                while (!isLaneAvailable(assignedLane, branchData.minLayer, branchData.maxLayer)) {
+                    assignedLane++;
                 }
 
-                node.children.forEach(childId => {
-                    const child = nodeMap.get(childId);
-                    if (child.branch === branchName) {
-                        assignLane(childId, node.lane);
-                    } else {
-                        assignLane(childId);
-                    }
-                });
-            }
-            assignLane(0, 0);
+                // Assign this lane to the branch
+                branchLanes.set(branchData.name, assignedLane);
+                occupyLane(assignedLane, branchData.minLayer, branchData.maxLayer);
+                maxLane = Math.max(maxLane, assignedLane);
 
-            // Calculate actual positions
+                // Assign lane to all nodes in this branch
+                branchData.nodes.forEach(node => {
+                    node.lane = assignedLane;
+                });
+            });
+
+            const laneCounter = maxLane + 1;
+
+            // Calculate actual positions with extra spacing at branch points
+            // First, identify which layers have branch points (nodes branching from different branch)
+            const branchPointLayers = new Set();
+            nodeMap.forEach(node => {
+                if (node.parentId !== null) {
+                    const parent = nodeMap.get(node.parentId);
+                    if (parent && parent.branch !== node.branch) {
+                        // Mark this layer as having a branch point
+                        branchPointLayers.add(node.layer);
+                    }
+                }
+            });
+
+            // Calculate cumulative extra spacing per layer
+            // Extra spacing should be added BEFORE the layer with branch point
+            const cumulativeSpacing = [];
+            let cumulative = 0;
+            for (let layer = 0; layer <= maxLayer; layer++) {
+                // Add spacing before this layer if it has branch points
+                if (branchPointLayers.has(layer)) {
+                    cumulative += config.branchPointSpacing;
+                }
+                cumulativeSpacing[layer] = cumulative;
+            }
+
+            // Assign positions
             nodeMap.forEach(node => {
                 node.x = config.padding.left + node.lane * config.horizontalSpacing;
-                node.y = config.padding.top + node.layer * config.verticalSpacing;
+                node.y = config.padding.top +
+                         node.layer * config.verticalSpacing +
+                         cumulativeSpacing[node.layer];
             });
 
             graph.nodes = Array.from(nodeMap.values());
             graph.width = config.padding.left + config.padding.right +
                           (laneCounter) * config.horizontalSpacing;
-            graph.height = config.padding.top + config.padding.bottom +
-                           maxLayer * config.verticalSpacing;
+
+            // Calculate actual height based on final node positions
+            const maxY = Math.max(...graph.nodes.map(n => n.y));
+            graph.height = maxY + config.padding.bottom;
 
             return graph;
+        }
+
+        // Store full graph globally
+        let fullGraph = null;
+        let isCollapsed = false;
+
+        // Identify important nodes (heads and branch points)
+        function getImportantNodes(graph) {
+            const important = new Set();
+
+            graph.nodes.forEach(node => {
+                // Root node is always important
+                if (node.parentId === null) {
+                    important.add(node.id);
+                    return;
+                }
+
+                // Head nodes (no children or all children in same branch)
+                if (node.children.length === 0) {
+                    important.add(node.id);
+                    return;
+                }
+
+                // Branch point nodes (has children in different branches)
+                const childBranches = new Set();
+                node.children.forEach(childId => {
+                    const child = graph.nodes.find(n => n.id === childId);
+                    if (child) {
+                        childBranches.add(child.branch);
+                    }
+                });
+
+                if (childBranches.size > 1 || !childBranches.has(node.branch)) {
+                    important.add(node.id);
+                }
+            });
+
+            return important;
+        }
+
+        // Create collapsed graph
+        function createCollapsedGraph(graph) {
+            const important = getImportantNodes(graph);
+            const nodeMap = new Map(graph.nodes.map(n => [n.id, n]));
+
+            // Build visible nodes and collapsed ranges
+            const newNodes = [];
+            const newEdges = [];
+            let collapsedIdCounter = 100000; // Use high IDs for collapsed nodes
+
+            // Find sequences of hidden nodes between important nodes
+            function findHiddenSequence(startId, endId) {
+                const sequence = [];
+                let currentId = endId;
+
+                while (currentId !== null && currentId !== startId) {
+                    const node = nodeMap.get(currentId);
+                    if (!node) break;
+
+                    if (!important.has(currentId)) {
+                        sequence.unshift(node);
+                    }
+                    currentId = node.parentId;
+                }
+
+                return sequence;
+            }
+
+            // Process each important node
+            const sortedImportant = Array.from(important).sort((a, b) => {
+                const nodeA = nodeMap.get(a);
+                const nodeB = nodeMap.get(b);
+                return nodeA.layer - nodeB.layer;
+            });
+
+            sortedImportant.forEach(nodeId => {
+                const node = nodeMap.get(nodeId);
+                newNodes.push(node);
+
+                if (node.parentId !== null) {
+                    // Find the nearest visible ancestor
+                    let ancestorId = node.parentId;
+                    const hiddenNodes = [];
+
+                    while (ancestorId !== null && !important.has(ancestorId)) {
+                        const ancestor = nodeMap.get(ancestorId);
+                        if (!ancestor) break;
+                        hiddenNodes.unshift(ancestor);
+                        ancestorId = ancestor.parentId;
+                    }
+
+                    if (ancestorId !== null) {
+                        if (hiddenNodes.length > 1) {
+                            // Create a collapsed node only if there are 2+ hidden nodes
+                            const firstHidden = hiddenNodes[0];
+                            const lastHidden = hiddenNodes[hiddenNodes.length - 1];
+
+                            const collapsedNode = {
+                                id: collapsedIdCounter++,
+                                isCollapsed: true,
+                                collapsedRange: {
+                                    start: firstHidden.id,
+                                    end: lastHidden.id,
+                                    count: hiddenNodes.length
+                                },
+                                branch: node.branch,
+                                parentId: ancestorId,
+                                children: [node.id],
+                                layer: firstHidden.layer + Math.floor(hiddenNodes.length / 2),
+                                lane: node.lane,
+                                x: node.x,
+                                y: (nodeMap.get(ancestorId).y + node.y) / 2
+                            };
+
+                            newNodes.push(collapsedNode);
+                            newEdges.push({ from: ancestorId, to: collapsedNode.id });
+                            newEdges.push({ from: collapsedNode.id, to: node.id });
+                        } else if (hiddenNodes.length === 1) {
+                            // Show single hidden node normally (don't hide it)
+                            const singleNode = hiddenNodes[0];
+                            newNodes.push(singleNode);
+                            newEdges.push({ from: ancestorId, to: singleNode.id });
+                            newEdges.push({ from: singleNode.id, to: node.id });
+                        } else {
+                            // No hidden nodes - connect directly
+                            newEdges.push({ from: ancestorId, to: node.id });
+                        }
+                    }
+                }
+            });
+
+            return {
+                ...graph,
+                nodes: newNodes,
+                edges: newEdges
+            };
         }
 
         // Render the graph
@@ -326,56 +569,105 @@
             svg.setAttribute('height', graph.height);
             svg.innerHTML = '';
 
-            // Draw edges
+            // Draw edges with curves
             graph.edges.forEach(edge => {
                 const from = graph.nodes.find(n => n.id === edge.from);
                 const to = graph.nodes.find(n => n.id === edge.to);
 
-                const line = document.createElementNS('http://www.w3.org/2000/svg', 'line');
-                line.setAttribute('class', 'edge');
-                line.setAttribute('x1', from.x);
-                line.setAttribute('y1', from.y);
-                line.setAttribute('x2', to.x);
-                line.setAttribute('y2', to.y);
+                const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
+                path.setAttribute('class', 'edge');
+
+                // Create curved path
+                const dx = to.x - from.x;
+                const dy = to.y - from.y;
+                const midY = from.y + dy / 2;
+
+                // Cubic bezier curve for smooth connection
+                const pathData = `M ${from.x} ${from.y} C ${from.x} ${midY}, ${to.x} ${midY}, ${to.x} ${to.y}`;
+                path.setAttribute('d', pathData);
 
                 // Different style for branch creation
                 if (from.branch !== to.branch) {
-                    line.setAttribute('stroke-dasharray', '5,5');
-                    line.setAttribute('stroke', testData.branches[to.branch].color);
-                    line.setAttribute('opacity', '0.6');
+                    path.setAttribute('stroke-dasharray', '5,5');
+                    path.setAttribute('stroke', testData.branches[to.branch].color);
+                    path.setAttribute('opacity', '0.6');
                 }
 
-                svg.appendChild(line);
+                svg.appendChild(path);
             });
 
             // Draw nodes
             graph.nodes.forEach(node => {
-                const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
-                g.setAttribute('class', 'version-node');
-                g.setAttribute('data-id', node.id);
-                g.style.cursor = 'pointer';
+                if (node.isCollapsed) {
+                    // Render collapsed node (two overlapping circles)
+                    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    g.setAttribute('class', 'collapsed-node');
+                    g.setAttribute('data-id', node.id);
 
-                const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
-                circle.setAttribute('cx', node.x);
-                circle.setAttribute('cy', node.y);
-                circle.setAttribute('r', config.nodeRadius);
-                circle.setAttribute('fill', testData.branches[node.branch].color);
-                circle.setAttribute('stroke', '#d4d4d4');
-                circle.setAttribute('stroke-width', '2');
+                    // First circle (background)
+                    const circle1 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle1.setAttribute('cx', node.x);
+                    circle1.setAttribute('cy', node.y - 3);
+                    circle1.setAttribute('r', config.nodeRadius);
+                    circle1.setAttribute('fill', testData.branches[node.branch].color);
+                    circle1.setAttribute('stroke', '#d4d4d4');
+                    circle1.setAttribute('stroke-width', '2');
+                    circle1.setAttribute('opacity', '0.6');
 
-                const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
-                text.setAttribute('x', node.x);
-                text.setAttribute('y', node.y - 15);
-                text.setAttribute('text-anchor', 'middle');
-                text.setAttribute('fill', '#d4d4d4');
-                text.setAttribute('font-size', '11px');
-                text.textContent = `v${node.id}`;
+                    // Second circle (foreground)
+                    const circle2 = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle2.setAttribute('cx', node.x);
+                    circle2.setAttribute('cy', node.y + 3);
+                    circle2.setAttribute('r', config.nodeRadius);
+                    circle2.setAttribute('fill', testData.branches[node.branch].color);
+                    circle2.setAttribute('stroke', '#d4d4d4');
+                    circle2.setAttribute('stroke-width', '2');
 
-                g.appendChild(circle);
-                g.appendChild(text);
-                g.onclick = () => showVersionDetails(node);
+                    // Label showing range
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', node.x + config.nodeRadius + 9);
+                    text.setAttribute('y', node.y + 4);
+                    text.setAttribute('text-anchor', 'start');
+                    text.setAttribute('fill', '#858585');
+                    text.setAttribute('font-size', '10px');
+                    text.setAttribute('font-style', 'italic');
+                    text.textContent = `v${node.collapsedRange.start}..v${node.collapsedRange.end}`;
 
-                svg.appendChild(g);
+                    g.appendChild(circle1);
+                    g.appendChild(circle2);
+                    g.appendChild(text);
+                    g.onclick = () => showCollapsedDetails(node);
+
+                    svg.appendChild(g);
+                } else {
+                    // Render normal node
+                    const g = document.createElementNS('http://www.w3.org/2000/svg', 'g');
+                    g.setAttribute('class', 'version-node');
+                    g.setAttribute('data-id', node.id);
+                    g.style.cursor = 'pointer';
+
+                    const circle = document.createElementNS('http://www.w3.org/2000/svg', 'circle');
+                    circle.setAttribute('cx', node.x);
+                    circle.setAttribute('cy', node.y);
+                    circle.setAttribute('r', config.nodeRadius);
+                    circle.setAttribute('fill', testData.branches[node.branch].color);
+                    circle.setAttribute('stroke', '#d4d4d4');
+                    circle.setAttribute('stroke-width', '2');
+
+                    const text = document.createElementNS('http://www.w3.org/2000/svg', 'text');
+                    text.setAttribute('x', node.x + config.nodeRadius + 6);
+                    text.setAttribute('y', node.y + 4);
+                    text.setAttribute('text-anchor', 'start');
+                    text.setAttribute('fill', '#d4d4d4');
+                    text.setAttribute('font-size', '11px');
+                    text.textContent = `v${node.id}`;
+
+                    g.appendChild(circle);
+                    g.appendChild(text);
+                    g.onclick = () => showVersionDetails(node);
+
+                    svg.appendChild(g);
+                }
             });
         }
 
@@ -427,6 +719,44 @@
             modal.classList.add('active');
         }
 
+        // Show collapsed node details in modal
+        function showCollapsedDetails(node) {
+            const modal = document.getElementById('versionModal');
+            const modalTitle = document.getElementById('modalTitle');
+            const modalBody = document.getElementById('modalBody');
+
+            modalTitle.textContent = `Collapsed Versions`;
+
+            const branch = testData.branches[node.branch];
+
+            modalBody.innerHTML = `
+                <div class="modal-section">
+                    <div class="modal-label">Branch</div>
+                    <div class="modal-value">
+                        <span class="version-badge" style="background: ${branch.color}20; color: ${branch.color}; border: 1px solid ${branch.color}">
+                            ${branch.name}
+                        </span>
+                    </div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Version Range</div>
+                    <div class="modal-value">v${node.collapsedRange.start} to v${node.collapsedRange.end}</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Collapsed Versions</div>
+                    <div class="modal-value">${node.collapsedRange.count} version(s) hidden</div>
+                </div>
+                <div class="modal-section">
+                    <div class="modal-label">Info</div>
+                    <div class="modal-value" style="color: #858585; font-size: 12px;">
+                        These are intermediate versions between branch points. Uncheck "Collapse" to see all versions.
+                    </div>
+                </div>
+            `;
+
+            modal.classList.add('active');
+        }
+
         function closeModal() {
             document.getElementById('versionModal').classList.remove('active');
         }
@@ -445,6 +775,18 @@
             });
         }
 
+        // Toggle collapse mode
+        function toggleCollapse() {
+            isCollapsed = document.getElementById('collapseToggle').checked;
+
+            if (isCollapsed) {
+                const collapsed = createCollapsedGraph(fullGraph);
+                renderGraph(collapsed);
+            } else {
+                renderGraph(fullGraph);
+            }
+        }
+
         // Close modal on background click
         document.getElementById('versionModal').addEventListener('click', (e) => {
             if (e.target.id === 'versionModal') {
@@ -454,8 +796,8 @@
 
         // Initialize
         window.addEventListener('DOMContentLoaded', () => {
-            const graph = buildGraph(testData);
-            renderGraph(graph);
+            fullGraph = buildGraph(testData);
+            renderGraph(fullGraph);
             renderLegend();
         });
     </script>
