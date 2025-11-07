@@ -102,7 +102,7 @@
             position: relative;
         }
         .resize-handle {
-            width: 5px;
+            width: 3px;
             cursor: col-resize;
             background: transparent;
             border-right: 1px solid #3e3e42;
@@ -114,6 +114,19 @@
         .resize-handle.resizing {
             background: #569cd6;
         }
+        .resize-handle-horizontal {
+            height: 5px;
+            cursor: row-resize;
+            background: transparent;
+            border-bottom: 1px solid #3e3e42;
+            flex-shrink: 0;
+        }
+        .resize-handle-horizontal:hover {
+            background: #569cd6;
+        }
+        .resize-handle-horizontal.resizing {
+            background: #569cd6;
+        }
         .main-content {
             flex: 1;
             display: flex;
@@ -122,24 +135,23 @@
             overflow: hidden;
         }
         .editor-section {
-            flex: 1;
+            height: 50%;
+            min-height: 150px;
             display: flex;
             flex-direction: column;
-            min-height: 0;
         }
         .results-section {
-            flex: 1;
+            height: 50%;
+            min-height: 150px;
             display: flex;
             flex-direction: column;
-            min-height: 0;
-            margin-top: 1rem;
         }
         textarea {
             flex: 1;
             background: #1e1e1e;
             color: #d4d4d4;
             border: 1px solid #3e3e42;
-            padding: 1rem;
+            padding: 0.3rem;
             font-family: 'Courier New', monospace;
             font-size: 14px;
             resize: none;
@@ -148,17 +160,17 @@
             flex: 1;
             background: #1e1e1e;
             border: 1px solid #3e3e42;
-            padding: 1rem;
+            padding: 0.3rem;
             overflow-y: auto;
             font-family: 'Courier New', monospace;
             font-size: 12px;
-            white-space: pre-wrap;
+            /*white-space: pre-wrap;*/
         }
-        button {
+        .real-button {
             background: #0e639c;
             color: white;
             border: none;
-            padding: 0.5rem 1rem;
+            padding: 0.35rem 0.5rem;
             cursor: pointer;
             font-size: 14px;
             margin: 0.5rem 0.5rem 0.5rem 0;
@@ -266,6 +278,30 @@
         .notification.info {
             border-left: 4px solid #569cd6;
         }
+        .explain-tab {
+            background: transparent;
+            border: none;
+            color: #858585;
+            padding: 0.3rem 0.3rem;
+            cursor: pointer;
+            border-bottom: 2px solid transparent;
+            font-size: 12px;
+            transition: all 0.2s ease;
+        }
+        .explain-tab:hover {
+            background: #2d2d30;
+            color: #d4d4d4;
+        }
+        .explain-tab.active {
+            background: #37373d;
+            border-bottom-color: #4ec9b0;
+        }
+        .explain-tab.error {
+            color: #f48771;
+        }
+        .explain-tab.active.error {
+            color: #f48771;
+        }
         @keyframes slideIn {
             from {
                 transform: translateX(400px);
@@ -304,12 +340,12 @@
         <div class="sidebar-wrapper">
             <div class="sidebar" id="sidebar">
                 <div class="section-title">Branches</div>
-                <button onclick="app.showNewBranchInput()">New Branch</button>
-                <button onclick="app.startNewTree()">Start New Tree</button>
+                <button class="real-button" onclick="app.showNewBranchInput()">New Branch</button>
+                <button class="real-button" onclick="app.startNewTree()">Start New Tree</button>
                 <div id="newBranchForm" style="display: none;">
                     <input type="text" id="newBranchName" class="new-branch-input" placeholder="Branch name...">
-                    <button onclick="app.createBranch()">Create</button>
-                    <button onclick="app.hideNewBranchInput()">Cancel</button>
+                    <button class="real-button" onclick="app.createBranch()">Create</button>
+                    <button class="real-button" onclick="app.hideNewBranchInput()">Cancel</button>
                 </div>
                 <div id="branchList"></div>
 
@@ -320,7 +356,7 @@
         </div>
 
         <div class="main-content">
-            <div class="editor-section">
+            <div class="editor-section" id="editorSection">
                 <div class="controls">
                     <span class="section-title">Query Editor</span>
                     <span id="currentBranch" style="color: #858585; margin-left: 1rem;"></span>
@@ -328,15 +364,17 @@
                 </div>
                 <textarea id="queryEditor" placeholder="Paste your ClickHouse query here..."></textarea>
                 <div style="padding: 0.5rem 0;">
-                    <button onclick="app.explainQuery()">Run EXPLAIN (Ctrl+Enter)</button>
-                    <button id="forceAnalyzerBtn" onclick="app.explainQuery(true)" style="display: none;">
+                    <button class="real-button" onclick="app.explainQuery()">Run EXPLAIN (Ctrl+Enter)</button>
+                    <button class="real-button" id="forceAnalyzerBtn" onclick="app.explainQuery(true)" style="display: none;">
                         SET enable_analyzer=1 and EXPLAIN
                     </button>
-                    <button onclick="app.clearEditor()">Clear</button>
+                    <button class="real-button" onclick="app.clearEditor()">Clear</button>
                 </div>
             </div>
 
-            <div class="results-section">
+            <div class="resize-handle-horizontal" id="resizeHandleHorizontal"></div>
+
+            <div class="results-section" id="resultsSection">
                 <div class="section-title">Results</div>
                 <div class="section-version"> # version</div>
                 <div id="results" class="results">No results yet. Run EXPLAIN to see query analysis.</div>
@@ -599,17 +637,11 @@
                     document.getElementsByClassName(`section-version`)[0].innerHTML = versionHtml;
 
                     // Create tabs for each EXPLAIN type
-                    let html = '<div style="display: flex; gap: 0.5rem; margin-bottom: 1rem; border-bottom: 1px solid #3e3e42;">';
+                    let html = '<div style="display: flex; gap: 0.2rem; margin-bottom: 0.5rem; border-bottom: 1px solid #3e3e42;">';
                     version.explainResults.forEach((result, idx) => {
-                        const tabId = `explain-tab-${idx}`;
-                        html += `<button class="explain-tab ${idx === 0 ? 'active' : ''}"
-                                        onclick="app.switchExplainTab(${idx})"
-                                        style="background: ${idx === 0 ? '#37373d' : 'transparent'};
-                                               border: none;
-                                               color: ${result.error ? '#f48771' : '#4ec9b0'};
-                                               padding: 0.5rem 1rem;
-                                               cursor: pointer;
-                                               border-bottom: 2px solid ${idx === 0 ? '#4ec9b0' : 'transparent'};">
+                        const errorClass = result.error ? 'error' : '';
+                        html += `<button class="explain-tab ${idx === 0 ? 'active' : ''} ${errorClass}"
+                                        onclick="app.switchExplainTab(${idx})">
                                     ${result.type}${result.error ? ' ⚠' : ''}
                                 </button>`;
                     });
@@ -638,11 +670,10 @@
             },
 
             switchExplainTab(idx) {
-                // Hide all tabs
+                // Hide all tabs and remove active class
                 document.querySelectorAll('.explain-content').forEach(el => el.style.display = 'none');
                 document.querySelectorAll('.explain-tab').forEach(el => {
-                    el.style.background = 'transparent';
-                    el.style.borderBottom = '2px solid transparent';
+                    el.classList.remove('active');
                 });
 
                 // Show selected tab
@@ -653,8 +684,7 @@
 
                 const tabs = document.querySelectorAll('.explain-tab');
                 if (tabs[idx]) {
-                    tabs[idx].style.background = '#37373d';
-                    tabs[idx].style.borderBottom = '2px solid #4ec9b0';
+                    tabs[idx].classList.add('active');
                 }
             },
 
@@ -822,10 +852,66 @@
             });
         };
 
+        // Horizontal resize functionality for editor/results split
+        const initHorizontalResize = () => {
+            const editorSection = document.getElementById('editorSection');
+            const resultsSection = document.getElementById('resultsSection');
+            const resizeHandle = document.getElementById('resizeHandleHorizontal');
+            const mainContent = document.querySelector('.main-content');
+            const storageKey = 'clicktelligence-editor-height';
+            let isResizing = false;
+
+            // Restore saved height from localStorage
+            const savedHeight = localStorage.getItem(storageKey);
+            if (savedHeight) {
+                const heightPercent = parseFloat(savedHeight);
+                if (heightPercent >= 20 && heightPercent <= 80) {
+                    editorSection.style.height = heightPercent + '%';
+                    resultsSection.style.height = (100 - heightPercent) + '%';
+                }
+            }
+
+            resizeHandle.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                resizeHandle.classList.add('resizing');
+                document.body.style.cursor = 'row-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isResizing) return;
+
+                const containerRect = mainContent.getBoundingClientRect();
+                const offsetY = e.clientY - containerRect.top;
+                const totalHeight = containerRect.height;
+                const newHeightPercent = (offsetY / totalHeight) * 100;
+
+                // Keep both sections at least 20% and at most 80% of the height
+                if (newHeightPercent >= 20 && newHeightPercent <= 80) {
+                    editorSection.style.height = newHeightPercent + '%';
+                    resultsSection.style.height = (100 - newHeightPercent) + '%';
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizeHandle.classList.remove('resizing');
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+
+                    // Save the final height percentage to localStorage
+                    const currentHeightPercent = (editorSection.offsetHeight / mainContent.offsetHeight) * 100;
+                    localStorage.setItem(storageKey, currentHeightPercent.toString());
+                }
+            });
+        };
+
         // Initialize app when page loads
         window.addEventListener('DOMContentLoaded', () => {
             app.init();
             initSidebarResize();
+            initHorizontalResize();
 
             // Setup keyboard shortcuts for query editor
             const queryEditor = document.getElementById('queryEditor');
