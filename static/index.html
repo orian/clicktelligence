@@ -91,16 +91,34 @@
         }
         .sidebar {
             width: 300px;
+            min-width: 150px;
+            max-width: 600px;
             background: #252526;
-            border-right: 1px solid #3e3e42;
-            padding: 1rem;
+            padding: 0.3rem;
             overflow-y: auto;
+        }
+        .sidebar-wrapper {
+            display: flex;
+            position: relative;
+        }
+        .resize-handle {
+            width: 5px;
+            cursor: col-resize;
+            background: transparent;
+            border-right: 1px solid #3e3e42;
+            flex-shrink: 0;
+        }
+        .resize-handle:hover {
+            background: #569cd6;
+        }
+        .resize-handle.resizing {
+            background: #569cd6;
         }
         .main-content {
             flex: 1;
             display: flex;
             flex-direction: column;
-            padding: 1rem;
+            padding: 0.3rem;
             overflow: hidden;
         }
         .editor-section {
@@ -283,19 +301,22 @@
     </header>
 
     <div class="container">
-        <div class="sidebar">
-            <div class="section-title">Branches</div>
-            <button onclick="app.showNewBranchInput()">New Branch</button>
-            <button onclick="app.startNewTree()">Start New Tree</button>
-            <div id="newBranchForm" style="display: none;">
-                <input type="text" id="newBranchName" class="new-branch-input" placeholder="Branch name...">
-                <button onclick="app.createBranch()">Create</button>
-                <button onclick="app.hideNewBranchInput()">Cancel</button>
-            </div>
-            <div id="branchList"></div>
+        <div class="sidebar-wrapper">
+            <div class="sidebar" id="sidebar">
+                <div class="section-title">Branches</div>
+                <button onclick="app.showNewBranchInput()">New Branch</button>
+                <button onclick="app.startNewTree()">Start New Tree</button>
+                <div id="newBranchForm" style="display: none;">
+                    <input type="text" id="newBranchName" class="new-branch-input" placeholder="Branch name...">
+                    <button onclick="app.createBranch()">Create</button>
+                    <button onclick="app.hideNewBranchInput()">Cancel</button>
+                </div>
+                <div id="branchList"></div>
 
-            <div class="section-title" style="margin-top: 1rem;">History</div>
-            <div id="historyList"></div>
+                <div class="section-title" style="margin-top: 1rem;">History</div>
+                <div id="historyList"></div>
+            </div>
+            <div class="resize-handle" id="resizeHandle"></div>
         </div>
 
         <div class="main-content">
@@ -752,9 +773,59 @@
             }
         };
 
+        // Sidebar resize functionality
+        const initSidebarResize = () => {
+            const sidebar = document.getElementById('sidebar');
+            const resizeHandle = document.getElementById('resizeHandle');
+            const minWidth = 150;
+            const maxWidth = 600;
+            const storageKey = 'clicktelligence-sidebar-width';
+            let isResizing = false;
+
+            // Restore saved width from localStorage
+            const savedWidth = localStorage.getItem(storageKey);
+            if (savedWidth) {
+                const width = parseInt(savedWidth, 10);
+                if (width >= minWidth && width <= maxWidth) {
+                    sidebar.style.width = width + 'px';
+                }
+            }
+
+            resizeHandle.addEventListener('mousedown', (e) => {
+                isResizing = true;
+                resizeHandle.classList.add('resizing');
+                document.body.style.cursor = 'col-resize';
+                document.body.style.userSelect = 'none';
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isResizing) return;
+
+                const newWidth = e.clientX;
+
+                if (newWidth >= minWidth && newWidth <= maxWidth) {
+                    sidebar.style.width = newWidth + 'px';
+                }
+            });
+
+            document.addEventListener('mouseup', () => {
+                if (isResizing) {
+                    isResizing = false;
+                    resizeHandle.classList.remove('resizing');
+                    document.body.style.cursor = '';
+                    document.body.style.userSelect = '';
+
+                    // Save the final width to localStorage
+                    const currentWidth = sidebar.offsetWidth;
+                    localStorage.setItem(storageKey, currentWidth.toString());
+                }
+            });
+        };
+
         // Initialize app when page loads
         window.addEventListener('DOMContentLoaded', () => {
             app.init();
+            initSidebarResize();
 
             // Setup keyboard shortcuts for query editor
             const queryEditor = document.getElementById('queryEditor');
