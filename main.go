@@ -222,16 +222,33 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 
 		var explainLines []string
 		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				rows.Close()
-				explainResults = append(explainResults, models.ExplainResult{
-					Type:  config.Type,
-					Error: fmt.Sprintf("Scan error: %v", err),
-				})
-				continue
+			// EXPLAIN ESTIMATE returns 5 columns: database, table, parts, rows, marks
+			// Other EXPLAIN types return a single text column
+			if config.Type == models.ExplainEstimate {
+				var database, table string
+				var parts, rowCount, marks uint64
+				if err := rows.Scan(&database, &table, &parts, &rowCount, &marks); err != nil {
+					rows.Close()
+					explainResults = append(explainResults, models.ExplainResult{
+						Type:  config.Type,
+						Error: fmt.Sprintf("Scan error: %v", err),
+					})
+					continue
+				}
+				line := fmt.Sprintf("%s.%s: parts=%d, rows=%d, marks=%d", database, table, parts, rowCount, marks)
+				explainLines = append(explainLines, line)
+			} else {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					rows.Close()
+					explainResults = append(explainResults, models.ExplainResult{
+						Type:  config.Type,
+						Error: fmt.Sprintf("Scan error: %v", err),
+					})
+					continue
+				}
+				explainLines = append(explainLines, line)
 			}
-			explainLines = append(explainLines, line)
 		}
 		rows.Close()
 

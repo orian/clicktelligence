@@ -322,6 +322,23 @@
                 opacity: 0;
             }
         }
+        .query-tooltip {
+            position: fixed;
+            background: #37373d;
+            border: 1px solid #569cd6;
+            border-radius: 4px;
+            padding: 0.5rem;
+            max-width: 400px;
+            max-height: 300px;
+            overflow: auto;
+            z-index: 1000;
+            font-family: 'Courier New', monospace;
+            font-size: 11px;
+            white-space: pre-wrap;
+            word-break: break-word;
+            color: #d4d4d4;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.3);
+        }
     </style>
 </head>
 <body>
@@ -390,6 +407,8 @@
             history: [],
             serverSettings: {},
             pingInterval: null,
+            tooltipTimeout: null,
+            tooltipElement: null,
 
             async init() {
                 await this.loadServerSettings();
@@ -546,19 +565,27 @@
                                 }).join('')}
                             </div>` : '';
 
+                        // Escape query for use in data attribute
+                        const escapedQuery = version.query
+                            .replace(/&/g, '&amp;')
+                            .replace(/"/g, '&quot;')
+                            .replace(/</g, '&lt;')
+                            .replace(/>/g, '&gt;')
+                            .replace(/'/g, '&#39;');
+
                         return `
-                        <div class="version-item ${isActive ? 'active' : ''}">
+                        <div class="version-item ${isActive ? 'active' : ''}"
+                             data-query="${escapedQuery}"
+                             onmouseenter="app.startQueryTooltip(event)"
+                             onmouseleave="app.cancelQueryTooltip()">
                             <div style="display: flex; align-items: center; justify-content: space-between;">
-                                <div style="color: #4ec9b0; flex: 1;" onclick="app.loadVersion('${version.id}')">Version ${version.id.slice(0, 8)}</div>
+                                <div style="color: #4ec9b0; flex: 1;" onclick="app.loadVersion('${version.id}')">${version.id.slice(0, 8)}</div>
                                 <button onclick="event.stopPropagation(); app.toggleStar('${version.id}')"
                                         style="background: transparent; border: none; color: ${isStarred ? '#ffd700' : '#858585'}; cursor: pointer; font-size: 16px; padding: 0;">
                                     ${starIcon}
                                 </button>
                             </div>
                             <div class="version-time" onclick="app.loadVersion('${version.id}')">${new Date(version.timestamp).toLocaleString()}</div>
-                            <div style="color: #858585; font-size: 11px; margin-top: 0.2rem;" onclick="app.loadVersion('${version.id}')">
-                                ${version.query.slice(0, 50)}...
-                            </div>
                             ${tagsHtml}
                         </div>
                     `}).join('');
@@ -799,6 +826,68 @@
                     await this.loadHistory();
                 } catch (error) {
                     this.showError('Failed to toggle star: ' + error.message);
+                }
+            },
+
+            startQueryTooltip(event) {
+                const target = event.currentTarget;
+                const query = target.dataset.query;
+                if (!query) return;
+
+                // Cancel any existing timeout
+                this.cancelQueryTooltip();
+
+                // Start 500ms delay before showing tooltip
+                this.tooltipTimeout = setTimeout(() => {
+                    this.showQueryTooltip(target, query);
+                }, 500);
+            },
+
+            showQueryTooltip(target, query) {
+                // Remove existing tooltip if any
+                this.hideQueryTooltip();
+
+                // Create tooltip element
+                const tooltip = document.createElement('div');
+                tooltip.className = 'query-tooltip';
+                tooltip.textContent = query;
+                document.body.appendChild(tooltip);
+                this.tooltipElement = tooltip;
+
+                // Position tooltip next to the target
+                const rect = target.getBoundingClientRect();
+                const tooltipRect = tooltip.getBoundingClientRect();
+
+                // Position to the right of the sidebar item
+                let left = rect.right + 10;
+                let top = rect.top;
+
+                // Adjust if tooltip goes off-screen to the right
+                if (left + tooltipRect.width > window.innerWidth - 10) {
+                    left = rect.left - tooltipRect.width - 10;
+                }
+
+                // Adjust if tooltip goes off-screen at the bottom
+                if (top + tooltipRect.height > window.innerHeight - 10) {
+                    top = window.innerHeight - tooltipRect.height - 10;
+                }
+
+                tooltip.style.left = left + 'px';
+                tooltip.style.top = top + 'px';
+            },
+
+            cancelQueryTooltip() {
+                if (this.tooltipTimeout) {
+                    clearTimeout(this.tooltipTimeout);
+                    this.tooltipTimeout = null;
+                }
+                this.hideQueryTooltip();
+            },
+
+            hideQueryTooltip() {
+                if (this.tooltipElement) {
+                    this.tooltipElement.remove();
+                    this.tooltipElement = null;
                 }
             }
         };
