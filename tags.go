@@ -4,53 +4,17 @@ import (
 	"database/sql"
 	"encoding/json"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/google/uuid"
+	"github.com/orian/clicktelligence/models"
 )
-
-// VersionTag represents a tag on a query version
-type VersionTag struct {
-	ID        string    `json:"id"`
-	VersionID string    `json:"versionId"`
-	TagKey    string    `json:"tagKey"`
-	TagValue  string    `json:"tagValue,omitempty"`
-	CreatedAt time.Time `json:"createdAt"`
-}
-
-// ParseTag parses a tag string into key and value
-// Examples:
-//   - "production" -> key="production", value=""
-//   - "environment=staging" -> key="environment", value="staging"
-//   - "system:starred" -> key="system:starred", value=""
-func ParseTag(tag string) (key string, value string) {
-	parts := strings.SplitN(tag, "=", 2)
-	key = strings.TrimSpace(parts[0])
-	if len(parts) == 2 {
-		value = strings.TrimSpace(parts[1])
-	}
-	return key, value
-}
-
-// FormatTag formats a tag back to string representation
-func (t *VersionTag) FormatTag() string {
-	if t.TagValue == "" {
-		return t.TagKey
-	}
-	return fmt.Sprintf("%s=%s", t.TagKey, t.TagValue)
-}
-
-// IsSystemTag checks if a tag is a system reserved tag
-func (t *VersionTag) IsSystemTag() bool {
-	return strings.HasPrefix(t.TagKey, "system:")
-}
 
 // Tag management methods for DuckDBStorage
 
 // AddTag adds a tag to a version
-func (s *DuckDBStorage) AddTag(versionID, tag string) (*VersionTag, error) {
-	key, value := ParseTag(tag)
+func (s *DuckDBStorage) AddTag(versionID, tag string) (*models.VersionTag, error) {
+	key, value := models.ParseTag(tag)
 
 	// Check if tag already exists
 	var count int
@@ -67,7 +31,7 @@ func (s *DuckDBStorage) AddTag(versionID, tag string) (*VersionTag, error) {
 	}
 
 	// Create new tag
-	tagObj := &VersionTag{
+	tagObj := &models.VersionTag{
 		ID:        uuid.New().String(),
 		VersionID: versionID,
 		TagKey:    key,
@@ -107,7 +71,7 @@ func (s *DuckDBStorage) RemoveTag(tagID string) error {
 }
 
 // GetVersionTags gets all tags for a version
-func (s *DuckDBStorage) GetVersionTags(versionID string) ([]*VersionTag, error) {
+func (s *DuckDBStorage) GetVersionTags(versionID string) ([]*models.VersionTag, error) {
 	rows, err := s.db.Query(`
 		SELECT id, version_id, tag_key, COALESCE(tag_value, ''), created_at
 		FROM version_tags
@@ -119,9 +83,9 @@ func (s *DuckDBStorage) GetVersionTags(versionID string) ([]*VersionTag, error) 
 	}
 	defer rows.Close()
 
-	var tags []*VersionTag
+	var tags []*models.VersionTag
 	for rows.Next() {
-		var tag VersionTag
+		var tag models.VersionTag
 		if err := rows.Scan(&tag.ID, &tag.VersionID, &tag.TagKey, &tag.TagValue, &tag.CreatedAt); err != nil {
 			return nil, fmt.Errorf("failed to scan tag: %w", err)
 		}
@@ -132,8 +96,8 @@ func (s *DuckDBStorage) GetVersionTags(versionID string) ([]*VersionTag, error) 
 }
 
 // GetVersionsByTag finds versions that have a specific tag
-func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*QueryVersion, error) {
-	key, value := ParseTag(tag)
+func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*models.QueryVersion, error) {
+	key, value := models.ParseTag(tag)
 
 	query := `
 		SELECT DISTINCT qv.id, qv.branch_id, qv.query, qv.query_hash,
@@ -152,9 +116,9 @@ func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*QueryVersion,
 	}
 	defer rows.Close()
 
-	var versions []*QueryVersion
+	var versions []*models.QueryVersion
 	for rows.Next() {
-		var v QueryVersion
+		var v models.QueryVersion
 		var explainResultsJSON string
 		var statsJSON string
 		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
@@ -162,7 +126,7 @@ func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*QueryVersion,
 		}
 
 		// Unmarshal JSON fields (same as GetBranchHistory)
-		v.ExplainResults = []ExplainResult{}
+		v.ExplainResults = []models.ExplainResult{}
 		if explainResultsJSON != "" && explainResultsJSON != "[]" {
 			if err := json.Unmarshal([]byte(explainResultsJSON), &v.ExplainResults); err != nil {
 				fmt.Printf("Warning: failed to unmarshal explain results for version %s: %v\n", v.ID, err)

@@ -1,45 +1,61 @@
-package main
+package models
 
 import (
 	"fmt"
 	"strings"
 )
 
-// ExplainType represents the type of EXPLAIN to run
+// ExplainType represents the type of EXPLAIN query to run against ClickHouse.
+// Each type provides different insights into query execution.
 type ExplainType string
 
 const (
-	ExplainAST           ExplainType = "AST"
-	ExplainSyntax        ExplainType = "SYNTAX"
-	ExplainQueryTree     ExplainType = "QUERY TREE"
-	ExplainPlan          ExplainType = "PLAN"
-	ExplainPipeline      ExplainType = "PIPELINE"
-	ExplainEstimate      ExplainType = "ESTIMATE"
+	// ExplainAST shows the Abstract Syntax Tree of the query.
+	ExplainAST ExplainType = "AST"
+
+	// ExplainSyntax shows the query after syntax optimization/normalization.
+	ExplainSyntax ExplainType = "SYNTAX"
+
+	// ExplainQueryTree shows the optimized query tree with pass information.
+	// Requires enable_analyzer=1 on newer ClickHouse versions.
+	ExplainQueryTree ExplainType = "QUERY TREE"
+
+	// ExplainPlan shows the query execution plan with steps, indexes, and actions.
+	ExplainPlan ExplainType = "PLAN"
+
+	// ExplainPipeline shows the data processing pipeline flow.
+	ExplainPipeline ExplainType = "PIPELINE"
+
+	// ExplainEstimate shows resource consumption predictions.
+	ExplainEstimate ExplainType = "ESTIMATE"
+
+	// ExplainTableOverride shows table override information.
 	ExplainTableOverride ExplainType = "TABLE OVERRIDE"
 )
 
-// ExplainSettings represents settings for an EXPLAIN query
+// ExplainSettings contains configuration options for EXPLAIN queries.
+// Different settings apply to different ExplainTypes.
 type ExplainSettings struct {
-	// Common settings
-	Header      *int `json:"header,omitempty"`      // Include headers (PLAN, PIPELINE)
-	Description *int `json:"description,omitempty"` // Include descriptions (PLAN)
+	// Common settings (PLAN, PIPELINE)
+	Header      *int `json:"header,omitempty"`      // Include headers
+	Description *int `json:"description,omitempty"` // Include descriptions (PLAN only)
 
-	// PLAN specific
+	// PLAN specific settings
 	Indexes     *int `json:"indexes,omitempty"`     // Show index usage
 	Projections *int `json:"projections,omitempty"` // Show projections
 	Actions     *int `json:"actions,omitempty"`     // Show detailed actions
 	JSONFormat  *int `json:"json,omitempty"`        // Output as JSON
 
-	// PIPELINE specific
-	Graph   *int `json:"graph,omitempty"`   // Output DOT graph
-	Compact *int `json:"compact,omitempty"` // Compact mode
+	// PIPELINE specific settings
+	Graph   *int `json:"graph,omitempty"`   // Output DOT graph format
+	Compact *int `json:"compact,omitempty"` // Compact output mode
 
-	// SYNTAX specific
+	// SYNTAX specific settings
 	OneLine            *int `json:"oneline,omitempty"`               // Single line output
 	RunQueryTreePasses *int `json:"run_query_tree_passes,omitempty"` // Run optimization passes
 	QueryTreePasses    *int `json:"query_tree_passes,omitempty"`     // Number of passes
 
-	// QUERY TREE specific
+	// QUERY TREE specific settings
 	RunPasses  *int `json:"run_passes,omitempty"`  // Execute all passes
 	DumpPasses *int `json:"dump_passes,omitempty"` // Show pass info
 	Passes     *int `json:"passes,omitempty"`      // Number of passes (-1 = all)
@@ -47,26 +63,46 @@ type ExplainSettings struct {
 	DumpAST    *int `json:"dump_ast,omitempty"`    // Show generated AST
 }
 
-// ExplainConfig represents a single EXPLAIN configuration
+// ExplainConfig represents a single EXPLAIN configuration with its type,
+// settings, and enabled state.
 type ExplainConfig struct {
-	Type     ExplainType     `json:"type"`
+	// Type is the EXPLAIN type to run.
+	Type ExplainType `json:"type"`
+
+	// Settings contains type-specific configuration options.
 	Settings ExplainSettings `json:"settings"`
-	Enabled  bool            `json:"enabled"`
+
+	// Enabled indicates if this configuration should be executed.
+	Enabled bool `json:"enabled"`
 }
 
-// ExplainResult stores the result of an EXPLAIN execution
+// ExplainResult stores the output from an EXPLAIN execution.
 type ExplainResult struct {
-	Type   ExplainType `json:"type"`
-	Output string      `json:"output"`
-	Error  string      `json:"error,omitempty"`
+	// Type identifies which EXPLAIN type produced this result.
+	Type ExplainType `json:"type"`
+
+	// Output contains the text output from ClickHouse.
+	// Empty if execution failed.
+	Output string `json:"output"`
+
+	// Error contains the error message if execution failed.
+	// Empty on success.
+	Error string `json:"error,omitempty"`
 }
 
-// BuildExplainQuery constructs the EXPLAIN query string
+// BuildExplainQuery constructs the full EXPLAIN query string.
+//
+// Parameters:
+//   - query: The SQL query to explain
+//   - logComment: JSON comment to add to log_comment setting for tracking
+//   - forceAnalyzer: If true, adds enable_analyzer=1 for QUERY TREE type
+//
+// Returns the complete EXPLAIN query ready for execution.
 func (c *ExplainConfig) BuildExplainQuery(query string, logComment string, forceAnalyzer bool) string {
 	var parts []string
 
 	// Add EXPLAIN keyword and type
-	if c.Type == "" || c.Type == ExplainPlan {
+	if c.Type == "" {
 		parts = append(parts, "EXPLAIN")
 	} else {
 		parts = append(parts, fmt.Sprintf("EXPLAIN %s", c.Type))
@@ -97,7 +133,7 @@ func (c *ExplainConfig) BuildExplainQuery(query string, logComment string, force
 	return strings.Join(parts, " ")
 }
 
-// buildSettings constructs the settings string for EXPLAIN
+// buildSettings constructs the settings string for EXPLAIN based on type.
 func (c *ExplainConfig) buildSettings() string {
 	var settings []string
 
@@ -160,7 +196,8 @@ func (c *ExplainConfig) buildSettings() string {
 	return strings.Join(settings, ", ")
 }
 
-// GetDefaultExplainConfigs returns the default set of EXPLAIN configurations
+// GetDefaultExplainConfigs returns the default set of EXPLAIN configurations.
+// This provides a sensible set of analysis types for most use cases.
 func GetDefaultExplainConfigs() []ExplainConfig {
 	one := 1
 	zero := 0
@@ -171,6 +208,7 @@ func GetDefaultExplainConfigs() []ExplainConfig {
 			Settings: ExplainSettings{
 				Indexes:     &one,
 				Description: &one,
+				JSONFormat:  &one,
 			},
 			Enabled: true,
 		},

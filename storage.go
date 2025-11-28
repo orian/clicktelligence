@@ -8,6 +8,7 @@ import (
 
 	_ "github.com/duckdb/duckdb-go/v2"
 	"github.com/google/uuid"
+	"github.com/orian/clicktelligence/models"
 )
 
 type DuckDBStorage struct {
@@ -88,8 +89,8 @@ func (s *DuckDBStorage) ensureMainBranch() error {
 	return nil
 }
 
-func (s *DuckDBStorage) CreateBranch(name, parentBranchID, branchFromVersionID string) (*Branch, error) {
-	branch := &Branch{
+func (s *DuckDBStorage) CreateBranch(name, parentBranchID, branchFromVersionID string) (*models.Branch, error) {
+	branch := &models.Branch{
 		ID:                  generateID(),
 		Name:                name,
 		ParentBranchID:      parentBranchID,
@@ -108,7 +109,7 @@ func (s *DuckDBStorage) CreateBranch(name, parentBranchID, branchFromVersionID s
 	return branch, nil
 }
 
-func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
+func (s *DuckDBStorage) GetBranches() ([]*models.Branch, error) {
 	rows, err := s.db.Query(`
 		SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(branch_from_version_id, ''), COALESCE(current_version_id, ''), created_at
 		FROM branches
@@ -119,9 +120,9 @@ func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
 	}
 	defer rows.Close()
 
-	var branches []*Branch
+	var branches []*models.Branch
 	for rows.Next() {
-		var b Branch
+		var b models.Branch
 		if err := rows.Scan(&b.ID, &b.Name, &b.ParentBranchID, &b.BranchFromVersionID, &b.CurrentVersionID, &b.CreatedAt); err != nil {
 			return nil, err
 		}
@@ -131,8 +132,8 @@ func (s *DuckDBStorage) GetBranches() ([]*Branch, error) {
 	return branches, rows.Err()
 }
 
-func (s *DuckDBStorage) GetBranch(id string) (*Branch, bool) {
-	var b Branch
+func (s *DuckDBStorage) GetBranch(id string) (*models.Branch, bool) {
+	var b models.Branch
 	err := s.db.QueryRow(
 		"SELECT id, name, COALESCE(parent_branch_id, ''), COALESCE(branch_from_version_id, ''), COALESCE(current_version_id, ''), created_at FROM branches WHERE id = ?",
 		id,
@@ -145,7 +146,41 @@ func (s *DuckDBStorage) GetBranch(id string) (*Branch, bool) {
 	return &b, true
 }
 
-func (s *DuckDBStorage) SaveVersion(version *QueryVersion) error {
+func (s *DuckDBStorage) GetVersion(id string) (*models.QueryVersion, bool) {
+	var v models.QueryVersion
+	var explainResultsJSON string
+	var statsJSON string
+
+	err := s.db.QueryRow(`
+		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), explain_plan, COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
+		FROM query_versions
+		WHERE id = ?
+	`, id).Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID)
+
+	if err != nil {
+		return nil, false
+	}
+
+	// Unmarshal explain results
+	v.ExplainResults = []models.ExplainResult{}
+	if explainResultsJSON != "" && explainResultsJSON != "[]" {
+		if err := json.Unmarshal([]byte(explainResultsJSON), &v.ExplainResults); err != nil {
+			fmt.Printf("Warning: failed to unmarshal explain results for version %s: %v\n", v.ID, err)
+		}
+	}
+
+	// Initialize empty map if unmarshaling fails
+	v.ExecutionStats = make(map[string]interface{})
+	if statsJSON != "" && statsJSON != "{}" {
+		if err := json.Unmarshal([]byte(statsJSON), &v.ExecutionStats); err != nil {
+			fmt.Printf("Warning: failed to unmarshal stats for version %s: %v\n", v.ID, err)
+		}
+	}
+
+	return &v, true
+}
+
+func (s *DuckDBStorage) SaveVersion(version *models.QueryVersion) error {
 	statsJSON, err := json.Marshal(version.ExecutionStats)
 	if err != nil {
 		return fmt.Errorf("failed to marshal execution stats: %w", err)
@@ -185,7 +220,7 @@ func (s *DuckDBStorage) SaveVersion(version *QueryVersion) error {
 	return tx.Commit()
 }
 
-func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, error) {
+func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*models.QueryVersion, error) {
 	rows, err := s.db.Query(`
 		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), explain_plan, COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
 		FROM query_versions
@@ -197,10 +232,10 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, erro
 	}
 	defer rows.Close()
 
-	var versions []*QueryVersion
+	var versions []*models.QueryVersion
 	var versionIDs []string
 	for rows.Next() {
-		var v QueryVersion
+		var v models.QueryVersion
 		var explainResultsJSON string
 		var statsJSON string
 		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
@@ -208,7 +243,7 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, erro
 		}
 
 		// Unmarshal explain results
-		v.ExplainResults = []ExplainResult{}
+		v.ExplainResults = []models.ExplainResult{}
 		if explainResultsJSON != "" && explainResultsJSON != "[]" {
 			if err := json.Unmarshal([]byte(explainResultsJSON), &v.ExplainResults); err != nil {
 				fmt.Printf("Warning: failed to unmarshal explain results for version %s: %v\n", v.ID, err)
@@ -224,7 +259,7 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, erro
 			}
 		}
 
-		v.Tags = []*VersionTag{}
+		v.Tags = []*models.VersionTag{}
 		versions = append(versions, &v)
 		versionIDs = append(versionIDs, v.ID)
 	}
@@ -241,7 +276,7 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, erro
 		}
 
 		// Map tags to versions
-		tagsByVersion := make(map[string][]*VersionTag)
+		tagsByVersion := make(map[string][]*models.VersionTag)
 		for _, tag := range tags {
 			tagsByVersion[tag.VersionID] = append(tagsByVersion[tag.VersionID], tag)
 		}
@@ -258,9 +293,9 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*QueryVersion, erro
 }
 
 // Helper function to get tags for multiple versions in one query
-func (s *DuckDBStorage) getTagsForVersions(versionIDs []string) ([]*VersionTag, error) {
+func (s *DuckDBStorage) getTagsForVersions(versionIDs []string) ([]*models.VersionTag, error) {
 	if len(versionIDs) == 0 {
-		return []*VersionTag{}, nil
+		return []*models.VersionTag{}, nil
 	}
 
 	// Build placeholders for IN clause
@@ -294,9 +329,9 @@ func (s *DuckDBStorage) getTagsForVersions(versionIDs []string) ([]*VersionTag, 
 	}
 	defer rows.Close()
 
-	var tags []*VersionTag
+	var tags []*models.VersionTag
 	for rows.Next() {
-		var tag VersionTag
+		var tag models.VersionTag
 		if err := rows.Scan(&tag.ID, &tag.VersionID, &tag.TagKey, &tag.TagValue, &tag.CreatedAt); err != nil {
 			return nil, err
 		}

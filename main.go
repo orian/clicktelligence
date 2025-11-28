@@ -18,55 +18,16 @@ import (
 	"github.com/go-chi/chi/v5"
 	"github.com/go-chi/chi/v5/middleware"
 	"github.com/google/uuid"
+	"github.com/orian/clicktelligence/models"
 )
 
-// Data models
-type QueryVersion struct {
-	ID              string                 `json:"id"`
-	BranchID        string                 `json:"branchId"`
-	Query           string                 `json:"query"`
-	QueryHash       string                 `json:"queryHash"`
-	ExplainResults  []ExplainResult        `json:"explainResults"`
-	ExplainPlan     string                 `json:"explainPlan"` // Deprecated: kept for backward compatibility
-	ExecutionStats  map[string]interface{} `json:"executionStats"`
-	Timestamp       time.Time              `json:"timestamp"`
-	ParentVersionID string                 `json:"parentVersionId,omitempty"`
-	Tags            []*VersionTag          `json:"tags,omitempty"`
-}
-
-type Branch struct {
-	ID                  string    `json:"id"`
-	Name                string    `json:"name"`
-	ParentBranchID      string    `json:"parentBranchId,omitempty"`
-	BranchFromVersionID string    `json:"branchFromVersionId,omitempty"`
-	CurrentVersionID    string    `json:"currentVersionId,omitempty"`
-	CreatedAt           time.Time `json:"createdAt"`
-}
-
-// Storage interface
-type Storage interface {
-	CreateBranch(name, parentBranchID, branchFromVersionID string) (*Branch, error)
-	GetBranches() ([]*Branch, error)
-	GetBranch(id string) (*Branch, bool)
-	SaveVersion(version *QueryVersion) error
-	GetBranchHistory(branchID string) ([]*QueryVersion, error)
-	Close() error
-
-	// Tag management
-	AddTag(versionID, tag string) (*VersionTag, error)
-	RemoveTag(tagID string) error
-	GetVersionTags(versionID string) ([]*VersionTag, error)
-	GetVersionsByTag(branchID, tag string) ([]*QueryVersion, error)
-	ToggleStarred(versionID string) (bool, error)
-}
-
-// Server
+// Server handles HTTP requests and coordinates between ClickHouse and storage.
 type Server struct {
-	storage Storage
+	storage models.Storage
 	chConn  driver.Conn
 }
 
-func NewServer(storage Storage, chConn driver.Conn) *Server {
+func NewServer(storage models.Storage, chConn driver.Conn) *Server {
 	return &Server{
 		storage: storage,
 		chConn:  chConn,
@@ -111,12 +72,12 @@ func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 		// Create a placeholder version
 		queryHash := hashQuery(placeholderQuery)
-		version := &QueryVersion{
+		version := &models.QueryVersion{
 			ID:             uuid.New().String(),
 			BranchID:       branch.ID,
 			Query:          placeholderQuery,
 			QueryHash:      queryHash,
-			ExplainResults: []ExplainResult{},
+			ExplainResults: []models.ExplainResult{},
 			ExplainPlan:    "-- Initial placeholder version",
 			ExecutionStats: make(map[string]interface{}),
 			Timestamp:      time.Now(),
@@ -135,12 +96,12 @@ func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 
 func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BranchID        string            `json:"branchId"`
-		Query           string            `json:"query"`
-		ParentVersionID string            `json:"parentVersionId"`
-		ExplainConfigs  []ExplainConfig   `json:"explainConfigs,omitempty"`
-		ForceAnalyzer   bool              `json:"forceAnalyzer,omitempty"`
-		ServerSettings  map[string]string `json:"serverSettings,omitempty"`
+		BranchID        string                 `json:"branchId"`
+		Query           string                 `json:"query"`
+		ParentVersionID string                 `json:"parentVersionId"`
+		ExplainConfigs  []models.ExplainConfig `json:"explainConfigs,omitempty"`
+		ForceAnalyzer   bool                   `json:"forceAnalyzer,omitempty"`
+		ServerSettings  map[string]string      `json:"serverSettings,omitempty"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -171,15 +132,15 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	configs := req.ExplainConfigs
 	if len(configs) == 0 {
 		log.Println("No EXPLAIN configurations provided, using default set")
-		configs = GetDefaultExplainConfigs()
+		configs = models.GetDefaultExplainConfigs()
 	}
 
 	// Filter out QUERY TREE if enable_analyzer=0 and not forcing
 	if !req.ForceAnalyzer {
 		if analyzerValue, ok := req.ServerSettings["enable_analyzer"]; ok && analyzerValue == "0" {
-			var filteredConfigs []ExplainConfig
+			var filteredConfigs []models.ExplainConfig
 			for _, config := range configs {
-				if config.Type != ExplainQueryTree {
+				if config.Type != models.ExplainQueryTree {
 					filteredConfigs = append(filteredConfigs, config)
 				} else {
 					log.Println("Skipping EXPLAIN QUERY TREE because enable_analyzer=0")
@@ -196,57 +157,86 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	log.Printf("Executing %d EXPLAIN(s) for query hash: %s (forceAnalyzer=%v)", len(configs), queryHash, req.ForceAnalyzer)
 
 	// Execute each enabled EXPLAIN configuration
-	var explainResults []ExplainResult
+	var explainResults []models.ExplainResult
 	var explainPlanLegacy string // For backward compatibility
+	resultsReused := false
 
-	for _, config := range configs {
-		if !config.Enabled {
-			continue
+	// Check if we can reuse results from parent (unchanged query with no errors)
+	if req.ParentVersionID != "" {
+		parentVersion, exists := s.storage.GetVersion(req.ParentVersionID)
+		if exists && parentVersion.QueryHash == queryHash && len(parentVersion.ExplainResults) > 0 {
+			// Check if parent has any errors
+			hasErrors := false
+			for _, result := range parentVersion.ExplainResults {
+				if result.Error != "" {
+					hasErrors = true
+					break
+				}
+			}
+
+			if !hasErrors {
+				// Reuse results from parent
+				explainResults = parentVersion.ExplainResults
+				explainPlanLegacy = parentVersion.ExplainPlan
+				resultsReused = true
+				log.Printf("Query unchanged, reusing results from parent version %s", req.ParentVersionID)
+			} else {
+				log.Printf("Query unchanged but parent had errors, re-executing EXPLAIN")
+			}
 		}
+	}
 
-		explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer)
-		log.Printf("Running: EXPLAIN %s", config.Type)
-
-		rows, err := s.chConn.Query(context.Background(), explainQuery)
-		if err != nil {
-			errMsg := fmt.Sprintf("Query error: %v", err)
-			explainResults = append(explainResults, ExplainResult{
-				Type:  config.Type,
-				Error: errMsg,
-			})
-			log.Printf("Error executing EXPLAIN %s: %v", config.Type, err)
-			continue
-		}
-
-		var explainLines []string
-		for rows.Next() {
-			var line string
-			if err := rows.Scan(&line); err != nil {
-				rows.Close()
-				explainResults = append(explainResults, ExplainResult{
-					Type:  config.Type,
-					Error: fmt.Sprintf("Scan error: %v", err),
-				})
+	// Only execute if we couldn't reuse results
+	if !resultsReused {
+		for _, config := range configs {
+			if !config.Enabled {
 				continue
 			}
-			explainLines = append(explainLines, line)
-		}
-		rows.Close()
 
-		output := strings.Join(explainLines, "\n")
-		explainResults = append(explainResults, ExplainResult{
-			Type:   config.Type,
-			Output: output,
-		})
+			explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer)
+			log.Printf("Running: EXPLAIN %s: %s", config.Type, explainQuery)
 
-		// Store first PLAN result as legacy explainPlan for backward compatibility
-		if config.Type == ExplainPlan && explainPlanLegacy == "" {
-			explainPlanLegacy = output
+			rows, err := s.chConn.Query(context.Background(), explainQuery)
+			if err != nil {
+				errMsg := fmt.Sprintf("Query error: %v", err)
+				explainResults = append(explainResults, models.ExplainResult{
+					Type:  config.Type,
+					Error: errMsg,
+				})
+				log.Printf("Error executing EXPLAIN %s: %v", config.Type, err)
+				continue
+			}
+
+			var explainLines []string
+			for rows.Next() {
+				var line string
+				if err := rows.Scan(&line); err != nil {
+					rows.Close()
+					explainResults = append(explainResults, models.ExplainResult{
+						Type:  config.Type,
+						Error: fmt.Sprintf("Scan error: %v", err),
+					})
+					continue
+				}
+				explainLines = append(explainLines, line)
+			}
+			rows.Close()
+
+			output := strings.Join(explainLines, "\n")
+			explainResults = append(explainResults, models.ExplainResult{
+				Type:   config.Type,
+				Output: output,
+			})
+
+			// Store first PLAN result as legacy explainPlan for backward compatibility
+			if config.Type == models.ExplainPlan && explainPlanLegacy == "" {
+				explainPlanLegacy = output
+			}
 		}
 	}
 
 	// Create version
-	version := &QueryVersion{
+	version := &models.QueryVersion{
 		ID:              uuid.New().String(),
 		BranchID:        targetBranchID,
 		Query:           req.Query,
@@ -265,8 +255,9 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Include branch info in response if auto-branched
 	response := map[string]interface{}{
-		"version":      version,
-		"autoBranched": autoBranched,
+		"version":       version,
+		"autoBranched":  autoBranched,
+		"resultsReused": resultsReused,
 	}
 
 	if autoBranched {
@@ -295,7 +286,7 @@ func (s *Server) handleGetHistory(w http.ResponseWriter, r *http.Request) {
 }
 
 func (s *Server) handleGetExplainConfigs(w http.ResponseWriter, r *http.Request) {
-	configs := GetDefaultExplainConfigs()
+	configs := models.GetDefaultExplainConfigs()
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(configs)
 }
