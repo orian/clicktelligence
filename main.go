@@ -159,9 +159,8 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	// Execute each enabled EXPLAIN configuration
 	var explainResults []models.ExplainResult
 	var explainPlanLegacy string // For backward compatibility
-	resultsReused := false
 
-	// Check if we can reuse results from parent (unchanged query with no errors)
+	// Check if query is unchanged from parent - if so, return parent version (no-op)
 	if req.ParentVersionID != "" {
 		parentVersion, exists := s.storage.GetVersion(req.ParentVersionID)
 		if exists && parentVersion.QueryHash == queryHash && len(parentVersion.ExplainResults) > 0 {
@@ -175,63 +174,66 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 			}
 
 			if !hasErrors {
-				// Reuse results from parent
-				explainResults = parentVersion.ExplainResults
-				explainPlanLegacy = parentVersion.ExplainPlan
-				resultsReused = true
-				log.Printf("Query unchanged, reusing results from parent version %s", req.ParentVersionID)
-			} else {
-				log.Printf("Query unchanged but parent had errors, re-executing EXPLAIN")
+				// Query unchanged with no errors - return parent version as-is (no-op)
+				log.Printf("Query unchanged, returning existing version %s (no new version created)", req.ParentVersionID)
+
+				response := map[string]interface{}{
+					"version":       parentVersion,
+					"autoBranched":  false,
+					"resultsReused": true,
+				}
+				w.Header().Set("Content-Type", "application/json")
+				json.NewEncoder(w).Encode(response)
+				return
 			}
+			log.Printf("Query unchanged but parent had errors, re-executing EXPLAIN")
 		}
 	}
 
-	// Only execute if we couldn't reuse results
-	if !resultsReused {
-		for _, config := range configs {
-			if !config.Enabled {
-				continue
-			}
+	// Execute EXPLAIN queries
+	for _, config := range configs {
+		if !config.Enabled {
+			continue
+		}
 
-			explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer)
-			log.Printf("Running: EXPLAIN %s: %s", config.Type, explainQuery)
+		explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer)
+		log.Printf("Running: EXPLAIN %s: %s", config.Type, explainQuery)
 
-			rows, err := s.chConn.Query(context.Background(), explainQuery)
-			if err != nil {
-				errMsg := fmt.Sprintf("Query error: %v", err)
+		rows, err := s.chConn.Query(context.Background(), explainQuery)
+		if err != nil {
+			errMsg := fmt.Sprintf("Query error: %v", err)
+			explainResults = append(explainResults, models.ExplainResult{
+				Type:  config.Type,
+				Error: errMsg,
+			})
+			log.Printf("Error executing EXPLAIN %s: %v", config.Type, err)
+			continue
+		}
+
+		var explainLines []string
+		for rows.Next() {
+			var line string
+			if err := rows.Scan(&line); err != nil {
+				rows.Close()
 				explainResults = append(explainResults, models.ExplainResult{
 					Type:  config.Type,
-					Error: errMsg,
+					Error: fmt.Sprintf("Scan error: %v", err),
 				})
-				log.Printf("Error executing EXPLAIN %s: %v", config.Type, err)
 				continue
 			}
+			explainLines = append(explainLines, line)
+		}
+		rows.Close()
 
-			var explainLines []string
-			for rows.Next() {
-				var line string
-				if err := rows.Scan(&line); err != nil {
-					rows.Close()
-					explainResults = append(explainResults, models.ExplainResult{
-						Type:  config.Type,
-						Error: fmt.Sprintf("Scan error: %v", err),
-					})
-					continue
-				}
-				explainLines = append(explainLines, line)
-			}
-			rows.Close()
+		output := strings.Join(explainLines, "\n")
+		explainResults = append(explainResults, models.ExplainResult{
+			Type:   config.Type,
+			Output: output,
+		})
 
-			output := strings.Join(explainLines, "\n")
-			explainResults = append(explainResults, models.ExplainResult{
-				Type:   config.Type,
-				Output: output,
-			})
-
-			// Store first PLAN result as legacy explainPlan for backward compatibility
-			if config.Type == models.ExplainPlan && explainPlanLegacy == "" {
-				explainPlanLegacy = output
-			}
+		// Store first PLAN result as legacy explainPlan for backward compatibility
+		if config.Type == models.ExplainPlan && explainPlanLegacy == "" {
+			explainPlanLegacy = output
 		}
 	}
 
@@ -257,7 +259,7 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	response := map[string]interface{}{
 		"version":       version,
 		"autoBranched":  autoBranched,
-		"resultsReused": resultsReused,
+		"resultsReused": false,
 	}
 
 	if autoBranched {
