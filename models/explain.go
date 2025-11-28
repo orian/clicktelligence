@@ -96,9 +96,10 @@ type ExplainResult struct {
 //   - query: The SQL query to explain
 //   - logComment: JSON comment to add to log_comment setting for tracking
 //   - forceAnalyzer: If true, adds enable_analyzer=1 for QUERY TREE type
+//   - maxExecutionTimeMs: Maximum execution time in milliseconds (0 = no limit)
 //
 // Returns the complete EXPLAIN query ready for execution.
-func (c *ExplainConfig) BuildExplainQuery(query string, logComment string, forceAnalyzer bool) string {
+func (c *ExplainConfig) BuildExplainQuery(query string, logComment string, forceAnalyzer bool, maxExecutionTimeMs int) string {
 	var parts []string
 
 	// Add EXPLAIN keyword and type
@@ -124,6 +125,10 @@ func (c *ExplainConfig) BuildExplainQuery(query string, logComment string, force
 	}
 	if forceAnalyzer && c.Type == ExplainQueryTree {
 		settingsClause = append(settingsClause, "enable_analyzer=1")
+	}
+	if maxExecutionTimeMs > 0 {
+		// ClickHouse max_execution_time is in seconds (supports decimals)
+		settingsClause = append(settingsClause, fmt.Sprintf("max_execution_time=%.3f", float64(maxExecutionTimeMs)/1000.0))
 	}
 
 	if len(settingsClause) > 0 {

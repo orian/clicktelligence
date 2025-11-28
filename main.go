@@ -94,14 +94,18 @@ func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 	json.NewEncoder(w).Encode(branch)
 }
 
+// Default max execution time for EXPLAIN queries (in milliseconds)
+const DefaultMaxExecutionTimeMs = 1345 // 1.345 seconds
+
 func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	var req struct {
-		BranchID        string                 `json:"branchId"`
-		Query           string                 `json:"query"`
-		ParentVersionID string                 `json:"parentVersionId"`
-		ExplainConfigs  []models.ExplainConfig `json:"explainConfigs,omitempty"`
-		ForceAnalyzer   bool                   `json:"forceAnalyzer,omitempty"`
-		ServerSettings  map[string]string      `json:"serverSettings,omitempty"`
+		BranchID           string                 `json:"branchId"`
+		Query              string                 `json:"query"`
+		ParentVersionID    string                 `json:"parentVersionId"`
+		ExplainConfigs     []models.ExplainConfig `json:"explainConfigs,omitempty"`
+		ForceAnalyzer      bool                   `json:"forceAnalyzer,omitempty"`
+		ServerSettings     map[string]string      `json:"serverSettings,omitempty"`
+		MaxExecutionTimeMs int                    `json:"maxExecutionTimeMs,omitempty"` // 0 = use default
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
@@ -154,7 +158,13 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 	queryHash := hashQuery(req.Query)
 	logComment := buildLogComment(queryHash)
 
-	log.Printf("Executing %d EXPLAIN(s) for query hash: %s (forceAnalyzer=%v)", len(configs), queryHash, req.ForceAnalyzer)
+	// Use default max execution time if not specified
+	maxExecutionTimeMs := req.MaxExecutionTimeMs
+	if maxExecutionTimeMs <= 0 {
+		maxExecutionTimeMs = DefaultMaxExecutionTimeMs
+	}
+
+	log.Printf("Executing %d EXPLAIN(s) for query hash: %s (forceAnalyzer=%v, maxExecutionTimeMs=%d)", len(configs), queryHash, req.ForceAnalyzer, maxExecutionTimeMs)
 
 	// Execute each enabled EXPLAIN configuration
 	var explainResults []models.ExplainResult
@@ -196,7 +206,7 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 
-		explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer)
+		explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer, maxExecutionTimeMs)
 		log.Printf("Running: EXPLAIN %s: %s", config.Type, explainQuery)
 
 		rows, err := s.chConn.Query(context.Background(), explainQuery)
