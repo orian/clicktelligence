@@ -46,6 +46,7 @@ func (s *DuckDBStorage) initSchema() error {
 			name VARCHAR NOT NULL,
 			parent_branch_id VARCHAR,
 			current_version_id VARCHAR,
+			branch_from_version_id VARCHAR,
 			created_at TIMESTAMP NOT NULL
 		);
 
@@ -57,13 +58,17 @@ func (s *DuckDBStorage) initSchema() error {
 			explain_results TEXT,
 			execution_stats TEXT,
 			timestamp TIMESTAMP NOT NULL,
-			parent_version_id VARCHAR,
-			FOREIGN KEY (branch_id) REFERENCES branches(id)
+			parent_version_id VARCHAR
 		);
 
-		CREATE INDEX IF NOT EXISTS idx_versions_branch ON query_versions(branch_id);
-		CREATE INDEX IF NOT EXISTS idx_versions_timestamp ON query_versions(timestamp);
-		CREATE INDEX IF NOT EXISTS idx_versions_hash ON query_versions(query_hash);
+		CREATE TABLE IF NOT EXISTS version_tags (
+			id VARCHAR PRIMARY KEY,
+			version_id VARCHAR NOT NULL,
+			tag_key VARCHAR NOT NULL,
+			tag_value VARCHAR,
+			created_at TIMESTAMP NOT NULL,
+			FOREIGN KEY (version_id) REFERENCES query_versions(id)
+		);
 	`
 
 	_, err := s.db.Exec(schema)

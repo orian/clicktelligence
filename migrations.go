@@ -29,24 +29,6 @@ func GetMigrations() []Migration {
 					created_at TIMESTAMP NOT NULL,
 					FOREIGN KEY (version_id) REFERENCES query_versions(id)
 				);
-
-				CREATE INDEX IF NOT EXISTS idx_tags_version ON version_tags(version_id);
-				CREATE INDEX IF NOT EXISTS idx_tags_key ON version_tags(tag_key);
-				CREATE INDEX IF NOT EXISTS idx_tags_key_value ON version_tags(tag_key, tag_value);
-			`,
-		},
-		{
-			Version:     2,
-			Description: "Add branch_from_version_id to branches table",
-			SQL: `
-				ALTER TABLE branches ADD COLUMN IF NOT EXISTS branch_from_version_id VARCHAR;
-			`,
-		},
-		{
-			Version:     3,
-			Description: "Drop deprecated explain_plan column from query_versions",
-			SQL: `
-				ALTER TABLE query_versions DROP COLUMN IF EXISTS explain_plan;
 			`,
 		},
 	}
