@@ -670,6 +670,193 @@
                 }
             },
 
+            // Compute diff between current and previous ESTIMATE data
+            computeEstimateDiff(currentEstimate, previousEstimate) {
+                const diffRows = [];
+                const totals = {
+                    database: '',
+                    table: 'Total',
+                    parts: { current: 0, previous: 0, delta: 0, pct: null },
+                    rows: { current: 0, previous: 0, delta: 0, pct: null },
+                    marks: { current: 0, previous: 0, delta: 0, pct: null }
+                };
+
+                // Create a map of previous estimates by database.table key
+                const prevMap = new Map();
+                if (previousEstimate) {
+                    previousEstimate.forEach(row => {
+                        prevMap.set(`${row.database}.${row.table}`, row);
+                    });
+                }
+
+                // Track which previous tables we've seen
+                const seenPrevTables = new Set();
+
+                // Process current estimates
+                currentEstimate.forEach(curr => {
+                    const key = `${curr.database}.${curr.table}`;
+                    const prev = prevMap.get(key);
+                    seenPrevTables.add(key);
+
+                    const row = {
+                        database: curr.database,
+                        table: curr.table,
+                        parts: this.computeMetricDiff(curr.parts, prev?.parts),
+                        rows: this.computeMetricDiff(curr.rows, prev?.rows),
+                        marks: this.computeMetricDiff(curr.marks, prev?.marks)
+                    };
+                    diffRows.push(row);
+
+                    // Accumulate totals
+                    totals.parts.current += curr.parts;
+                    totals.parts.previous += prev?.parts || 0;
+                    totals.rows.current += curr.rows;
+                    totals.rows.previous += prev?.rows || 0;
+                    totals.marks.current += curr.marks;
+                    totals.marks.previous += prev?.marks || 0;
+                });
+
+                // Add rows for tables that exist in previous but not in current
+                if (previousEstimate) {
+                    previousEstimate.forEach(prev => {
+                        const key = `${prev.database}.${prev.table}`;
+                        if (!seenPrevTables.has(key)) {
+                            const row = {
+                                database: prev.database,
+                                table: prev.table,
+                                parts: this.computeMetricDiff(null, prev.parts),
+                                rows: this.computeMetricDiff(null, prev.rows),
+                                marks: this.computeMetricDiff(null, prev.marks)
+                            };
+                            diffRows.push(row);
+
+                            // Previous totals (current is 0/null for removed tables)
+                            totals.parts.previous += prev.parts;
+                            totals.rows.previous += prev.rows;
+                            totals.marks.previous += prev.marks;
+                        }
+                    });
+                }
+
+                // Compute total deltas and percentages
+                totals.parts.delta = totals.parts.current - totals.parts.previous;
+                totals.parts.pct = totals.parts.previous > 0
+                    ? ((totals.parts.delta / totals.parts.previous) * 100) : null;
+                totals.rows.delta = totals.rows.current - totals.rows.previous;
+                totals.rows.pct = totals.rows.previous > 0
+                    ? ((totals.rows.delta / totals.rows.previous) * 100) : null;
+                totals.marks.delta = totals.marks.current - totals.marks.previous;
+                totals.marks.pct = totals.marks.previous > 0
+                    ? ((totals.marks.delta / totals.marks.previous) * 100) : null;
+
+                return { rows: diffRows, totals };
+            },
+
+            // Compute diff for a single metric
+            computeMetricDiff(current, previous) {
+                const curr = current ?? null;
+                const prev = previous ?? null;
+                const delta = (curr !== null && prev !== null) ? curr - prev : null;
+                const pct = (prev !== null && prev > 0 && delta !== null)
+                    ? ((delta / prev) * 100) : null;
+                return { current: curr, previous: prev, delta, pct };
+            },
+
+            // Find the previous version with a valid (non-error) ESTIMATE
+            getPreviousValidVersion(currentVersion) {
+                if (!currentVersion || !currentVersion.parentVersionId) return null;
+
+                let parentId = currentVersion.parentVersionId;
+                while (parentId) {
+                    const parent = this.history.find(v => v.id === parentId);
+                    if (!parent) break;
+
+                    // Check if parent has valid (non-error) ESTIMATE
+                    const estimate = parent.explainResults?.find(r => r.type === 'ESTIMATE');
+                    if (estimate && !estimate.error && estimate.estimate?.length > 0) {
+                        return parent;
+                    }
+                    parentId = parent.parentVersionId;
+                }
+                return null;
+            },
+
+            // Format a metric diff cell for the SUMMARY table
+            formatMetricDiff(metric, isBaseline) {
+                const fmt = (n) => n !== null ? n.toLocaleString() : '—';
+                const fmtPct = (p) => p !== null ? `${p >= 0 ? '+' : ''}${p.toFixed(1)}%` : '—';
+
+                // Determine color based on delta (decrease = green/good, increase = red/bad)
+                let deltaColor = '#d4d4d4'; // neutral
+                if (metric.delta !== null && metric.delta !== 0) {
+                    deltaColor = metric.delta < 0 ? '#4ec9b0' : '#f48771'; // green for decrease, red for increase
+                }
+
+                if (isBaseline) {
+                    return `<td style="padding: 0.4rem 0.5rem; text-align: right; color: #b5cea8;">${fmt(metric.current)}</td>
+                            <td style="padding: 0.4rem 0.5rem; text-align: right; color: #858585;">—</td>`;
+                }
+
+                const deltaStr = metric.delta !== null
+                    ? `${metric.delta >= 0 ? '+' : ''}${fmt(metric.delta)} (${fmtPct(metric.pct)})`
+                    : '—';
+
+                return `<td style="padding: 0.4rem 0.5rem; text-align: right; color: #858585;">${fmt(metric.previous)} → <span style="color: #b5cea8;">${fmt(metric.current)}</span></td>
+                        <td style="padding: 0.4rem 0.5rem; text-align: right; color: ${deltaColor};">${deltaStr}</td>`;
+            },
+
+            // Render the SUMMARY tab content
+            renderSummaryContent(currentEstimate, previousVersion) {
+                const previousEstimate = previousVersion
+                    ? previousVersion.explainResults?.find(r => r.type === 'ESTIMATE')?.estimate
+                    : null;
+                const isBaseline = !previousEstimate;
+                const diff = this.computeEstimateDiff(currentEstimate, previousEstimate);
+
+                let headerNote = isBaseline
+                    ? '<div style="color: #858585; margin-bottom: 0.5rem; font-style: italic;">Baseline version — no previous version to compare</div>'
+                    : `<div style="color: #858585; margin-bottom: 0.5rem;">Comparing to version: ${previousVersion.id.slice(0, 8)}</div>`;
+
+                let tableHtml = `
+                    ${headerNote}
+                    <table style="width: 100%; border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 12px;">
+                        <thead>
+                            <tr style="background: #2d2d30; border-bottom: 1px solid #3e3e42;">
+                                <th style="padding: 0.5rem; text-align: left; color: #569cd6;">Database</th>
+                                <th style="padding: 0.5rem; text-align: left; color: #569cd6;">Table</th>
+                                <th style="padding: 0.5rem; text-align: right; color: #569cd6;" colspan="2">Parts</th>
+                                <th style="padding: 0.5rem; text-align: right; color: #569cd6;" colspan="2">Rows</th>
+                                <th style="padding: 0.5rem; text-align: right; color: #569cd6;" colspan="2">Marks</th>
+                            </tr>
+                        </thead>
+                        <tbody>`;
+
+                // Data rows
+                diff.rows.forEach(row => {
+                    tableHtml += `
+                        <tr style="border-bottom: 1px solid #3e3e42;">
+                            <td style="padding: 0.4rem 0.5rem; color: #4ec9b0;">${row.database}</td>
+                            <td style="padding: 0.4rem 0.5rem; color: #dcdcaa;">${row.table}</td>
+                            ${this.formatMetricDiff(row.parts, isBaseline)}
+                            ${this.formatMetricDiff(row.rows, isBaseline)}
+                            ${this.formatMetricDiff(row.marks, isBaseline)}
+                        </tr>`;
+                });
+
+                // Totals row
+                tableHtml += `
+                    <tr style="border-top: 2px solid #569cd6; background: #2d2d30; font-weight: bold;">
+                        <td style="padding: 0.4rem 0.5rem; color: #569cd6;"></td>
+                        <td style="padding: 0.4rem 0.5rem; color: #569cd6;">Total</td>
+                        ${this.formatMetricDiff(diff.totals.parts, isBaseline)}
+                        ${this.formatMetricDiff(diff.totals.rows, isBaseline)}
+                        ${this.formatMetricDiff(diff.totals.marks, isBaseline)}
+                    </tr>`;
+
+                tableHtml += `</tbody></table>`;
+                return tableHtml;
+            },
+
             showResults(text, version = null) {
                 const results = document.getElementById('results');
 
@@ -678,32 +865,52 @@
                     let versionHtml = `<div style="color: #858585; margin-bottom: 1rem;">Version: ${version.id}, Query Hash: ${version.queryHash}, Timestamp: ${new Date(version.timestamp).toLocaleString()}</div>`;
                     document.getElementsByClassName(`section-version`)[0].innerHTML = versionHtml;
 
-                    // Find the index of the previously selected tab type, or default to 0
+                    // Check if we have a valid ESTIMATE to show SUMMARY tab
+                    const currentEstimateResult = version.explainResults.find(r => r.type === 'ESTIMATE');
+                    const hasValidEstimate = currentEstimateResult && !currentEstimateResult.error && currentEstimateResult.estimate?.length > 0;
+
+                    // Build tabs array: SUMMARY first (if valid estimate), then all explain results
+                    const tabs = [];
+                    if (hasValidEstimate) {
+                        tabs.push({ type: 'SUMMARY', isSummary: true });
+                    }
+                    version.explainResults.forEach(result => {
+                        tabs.push({ type: result.type, result, isSummary: false });
+                    });
+
+                    // Find the index of the previously selected tab type, or default to 0 (SUMMARY)
                     let selectedIdx = 0;
                     if (this.currentExplainTabType) {
-                        const foundIdx = version.explainResults.findIndex(r => r.type === this.currentExplainTabType);
+                        const foundIdx = tabs.findIndex(t => t.type === this.currentExplainTabType);
                         if (foundIdx !== -1) {
                             selectedIdx = foundIdx;
                         }
                     }
 
-                    // Create tabs for each EXPLAIN type
+                    // Create tabs
                     let html = '<div style="display: flex; gap: 0.2rem; margin-bottom: 0.5rem; border-bottom: 1px solid #3e3e42;">';
-                    version.explainResults.forEach((result, idx) => {
-                        const errorClass = result.error ? 'error' : '';
+                    tabs.forEach((tab, idx) => {
+                        const errorClass = tab.result?.error ? 'error' : '';
+                        const errorIcon = tab.result?.error ? ' ⚠' : '';
                         html += `<button class="explain-tab ${idx === selectedIdx ? 'active' : ''} ${errorClass}"
                                         onclick="app.switchExplainTab(${idx})">
-                                    ${result.type}${result.error ? ' ⚠' : ''}
+                                    ${tab.type}${errorIcon}
                                 </button>`;
                     });
                     html += '</div>';
 
                     // Create content for each tab
-                    version.explainResults.forEach((result, idx) => {
+                    tabs.forEach((tab, idx) => {
                         const display = idx === selectedIdx ? 'block' : 'none';
 
-                        // ESTIMATE type uses structured data, render as table
-                        if (result.type === 'ESTIMATE' && result.estimate && result.estimate.length > 0) {
+                        if (tab.isSummary) {
+                            // SUMMARY tab - compute and render diff
+                            const previousVersion = this.getPreviousValidVersion(version);
+                            html += `<div class="explain-content" id="explain-content-${idx}" style="display: ${display};">
+                                ${this.renderSummaryContent(currentEstimateResult.estimate, previousVersion)}
+                            </div>`;
+                        } else if (tab.type === 'ESTIMATE' && tab.result.estimate && tab.result.estimate.length > 0) {
+                            // ESTIMATE type uses structured data, render as table
                             html += `<div class="explain-content" id="explain-content-${idx}" style="display: ${display};">
                                 <table style="width: 100%; border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 12px;">
                                     <thead>
@@ -716,7 +923,7 @@
                                         </tr>
                                     </thead>
                                     <tbody>
-                                        ${result.estimate.map(row => `
+                                        ${tab.result.estimate.map(row => `
                                             <tr style="border-bottom: 1px solid #3e3e42;">
                                                 <td style="padding: 0.4rem 0.5rem; color: #4ec9b0;">${row.database}</td>
                                                 <td style="padding: 0.4rem 0.5rem; color: #dcdcaa;">${row.table}</td>
@@ -729,7 +936,7 @@
                                 </table>
                             </div>`;
                         } else {
-                            const content = result.error ? `ERROR: ${result.error}` : result.output;
+                            const content = tab.result.error ? `ERROR: ${tab.result.error}` : tab.result.output;
                             html += `<pre class="explain-content" id="explain-content-${idx}"
                                           style="display: ${display}; margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace;">${content}</pre>`;
                         }
@@ -737,8 +944,9 @@
 
                     results.innerHTML = html;
                     this.currentExplainResults = version.explainResults;
+                    this.currentTabs = tabs; // Store tabs for switchExplainTab
                     // Update the current tab type to match what's now selected
-                    this.currentExplainTabType = version.explainResults[selectedIdx].type;
+                    this.currentExplainTabType = tabs[selectedIdx].type;
                     document.getElementById('downloadBtn').style.display = 'inline-block';
                 } else if (version) {
                     // Version with no explain results
@@ -792,7 +1000,10 @@
                 }
 
                 // Remember the selected tab type for persistence across queries
-                if (this.currentExplainResults && this.currentExplainResults[idx]) {
+                // Use currentTabs if available (includes SUMMARY), fallback to currentExplainResults
+                if (this.currentTabs && this.currentTabs[idx]) {
+                    this.currentExplainTabType = this.currentTabs[idx].type;
+                } else if (this.currentExplainResults && this.currentExplainResults[idx]) {
                     this.currentExplainTabType = this.currentExplainResults[idx].type;
                 }
             },
