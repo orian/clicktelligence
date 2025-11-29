@@ -78,7 +78,6 @@ func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 			Query:          placeholderQuery,
 			QueryHash:      queryHash,
 			ExplainResults: []models.ExplainResult{},
-			ExplainPlan:    "-- Initial placeholder version",
 			ExecutionStats: make(map[string]interface{}),
 			Timestamp:      time.Now(),
 		}
@@ -168,7 +167,6 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 
 	// Execute each enabled EXPLAIN configuration
 	var explainResults []models.ExplainResult
-	var explainPlanLegacy string // For backward compatibility
 
 	// Check if query is unchanged from parent - if so, return parent version (no-op)
 	if req.ParentVersionID != "" {
@@ -257,11 +255,6 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 			Type:   config.Type,
 			Output: output,
 		})
-
-		// Store first PLAN result as legacy explainPlan for backward compatibility
-		if config.Type == models.ExplainPlan && explainPlanLegacy == "" {
-			explainPlanLegacy = output
-		}
 	}
 
 	// Create version
@@ -271,7 +264,6 @@ func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
 		Query:           req.Query,
 		QueryHash:       queryHash,
 		ExplainResults:  explainResults,
-		ExplainPlan:     explainPlanLegacy,
 		ExecutionStats:  make(map[string]interface{}),
 		Timestamp:       time.Now(),
 		ParentVersionID: req.ParentVersionID,

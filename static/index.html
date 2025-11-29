@@ -392,7 +392,10 @@
             <div class="resize-handle-horizontal" id="resizeHandleHorizontal"></div>
 
             <div class="results-section" id="resultsSection">
-                <div class="section-title">Results</div>
+                <div style="display: flex; justify-content: space-between; align-items: center;">
+                    <div class="section-title">Results</div>
+                    <button class="real-button" id="downloadBtn" onclick="app.downloadVersion()" style="display: none; margin: 0; padding: 0.2rem 0.5rem; font-size: 12px;">Download JSON</button>
+                </div>
                 <div class="section-version"> # version</div>
                 <div id="results" class="results">No results yet. Run EXPLAIN to see query analysis.</div>
             </div>
@@ -409,6 +412,7 @@
             pingInterval: null,
             tooltipTimeout: null,
             tooltipElement: null,
+            currentExplainTabType: null,
 
             async init() {
                 await this.loadServerSettings();
@@ -663,11 +667,20 @@
                     let versionHtml = `<div style="color: #858585; margin-bottom: 1rem;">Version: ${version.id}, Query Hash: ${version.queryHash}, Timestamp: ${new Date(version.timestamp).toLocaleString()}</div>`;
                     document.getElementsByClassName(`section-version`)[0].innerHTML = versionHtml;
 
+                    // Find the index of the previously selected tab type, or default to 0
+                    let selectedIdx = 0;
+                    if (this.currentExplainTabType) {
+                        const foundIdx = version.explainResults.findIndex(r => r.type === this.currentExplainTabType);
+                        if (foundIdx !== -1) {
+                            selectedIdx = foundIdx;
+                        }
+                    }
+
                     // Create tabs for each EXPLAIN type
                     let html = '<div style="display: flex; gap: 0.2rem; margin-bottom: 0.5rem; border-bottom: 1px solid #3e3e42;">';
                     version.explainResults.forEach((result, idx) => {
                         const errorClass = result.error ? 'error' : '';
-                        html += `<button class="explain-tab ${idx === 0 ? 'active' : ''} ${errorClass}"
+                        html += `<button class="explain-tab ${idx === selectedIdx ? 'active' : ''} ${errorClass}"
                                         onclick="app.switchExplainTab(${idx})">
                                     ${result.type}${result.error ? ' ⚠' : ''}
                                 </button>`;
@@ -676,7 +689,7 @@
 
                     // Create content for each tab
                     version.explainResults.forEach((result, idx) => {
-                        const display = idx === 0 ? 'block' : 'none';
+                        const display = idx === selectedIdx ? 'block' : 'none';
                         const content = result.error ? `ERROR: ${result.error}` : result.output;
                         html += `<pre class="explain-content" id="explain-content-${idx}"
                                       style="display: ${display}; margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace;">${content}</pre>`;
@@ -684,16 +697,40 @@
 
                     results.innerHTML = html;
                     this.currentExplainResults = version.explainResults;
+                    // Update the current tab type to match what's now selected
+                    this.currentExplainTabType = version.explainResults[selectedIdx].type;
+                    document.getElementById('downloadBtn').style.display = 'inline-block';
                 } else if (version) {
-                    // Fallback to legacy format
+                    // Version with no explain results
                     let output = `Version: ${version.id}\n` +
                                  `Query Hash: ${version.queryHash}\n` +
                                  `Timestamp: ${new Date(version.timestamp).toLocaleString()}\n\n` +
-                                 `EXPLAIN Plan:\n${text || version.explainPlan}`;
+                                 `No EXPLAIN results available.`;
                     results.textContent = output;
+                    document.getElementById('downloadBtn').style.display = 'inline-block';
                 } else {
                     results.textContent = text;
+                    document.getElementById('downloadBtn').style.display = 'none';
                 }
+            },
+
+            downloadVersion() {
+                if (!this.currentVersion) {
+                    this.showError('No version selected to download');
+                    return;
+                }
+
+                const dataStr = JSON.stringify(this.currentVersion, null, 2);
+                const blob = new Blob([dataStr], { type: 'application/json' });
+                const url = URL.createObjectURL(blob);
+
+                const a = document.createElement('a');
+                a.href = url;
+                a.download = `version-${this.currentVersion.id.slice(0, 8)}.json`;
+                document.body.appendChild(a);
+                a.click();
+                document.body.removeChild(a);
+                URL.revokeObjectURL(url);
             },
 
             switchExplainTab(idx) {
@@ -712,6 +749,11 @@
                 const tabs = document.querySelectorAll('.explain-tab');
                 if (tabs[idx]) {
                     tabs[idx].classList.add('active');
+                }
+
+                // Remember the selected tab type for persistence across queries
+                if (this.currentExplainResults && this.currentExplainResults[idx]) {
+                    this.currentExplainTabType = this.currentExplainResults[idx].type;
                 }
             },
 
@@ -808,6 +850,7 @@
                 document.getElementById('queryEditor').value = '';
                 document.getElementById('results').textContent = 'No results yet. Run EXPLAIN to see query analysis.';
                 document.getElementsByClassName('section-version')[0].innerHTML = '# version';
+                document.getElementById('downloadBtn').style.display = 'none';
                 this.currentVersion = null;
                 this.renderHistory(); // Re-render to remove highlighting
             },

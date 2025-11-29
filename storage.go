@@ -55,7 +55,6 @@ func (s *DuckDBStorage) initSchema() error {
 			query TEXT NOT NULL,
 			query_hash VARCHAR NOT NULL,
 			explain_results TEXT,
-			explain_plan TEXT NOT NULL,
 			execution_stats TEXT,
 			timestamp TIMESTAMP NOT NULL,
 			parent_version_id VARCHAR,
@@ -152,10 +151,10 @@ func (s *DuckDBStorage) GetVersion(id string) (*models.QueryVersion, bool) {
 	var statsJSON string
 
 	err := s.db.QueryRow(`
-		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), explain_plan, COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
+		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
 		FROM query_versions
 		WHERE id = ?
-	`, id).Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID)
+	`, id).Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &statsJSON, &v.Timestamp, &v.ParentVersionID)
 
 	if err != nil {
 		return nil, false
@@ -199,9 +198,9 @@ func (s *DuckDBStorage) SaveVersion(version *models.QueryVersion) error {
 
 	// Insert version
 	_, err = tx.Exec(
-		`INSERT INTO query_versions (id, branch_id, query, query_hash, explain_results, explain_plan, execution_stats, timestamp, parent_version_id)
-		 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
-		version.ID, version.BranchID, version.Query, version.QueryHash, string(explainResultsJSON), version.ExplainPlan,
+		`INSERT INTO query_versions (id, branch_id, query, query_hash, explain_results, execution_stats, timestamp, parent_version_id)
+		 VALUES (?, ?, ?, ?, ?, ?, ?, ?)`,
+		version.ID, version.BranchID, version.Query, version.QueryHash, string(explainResultsJSON),
 		string(statsJSON), version.Timestamp, nullString(version.ParentVersionID),
 	)
 	if err != nil {
@@ -222,7 +221,7 @@ func (s *DuckDBStorage) SaveVersion(version *models.QueryVersion) error {
 
 func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*models.QueryVersion, error) {
 	rows, err := s.db.Query(`
-		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), explain_plan, COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
+		SELECT id, branch_id, query, query_hash, COALESCE(explain_results, '[]'), COALESCE(execution_stats, '{}'), timestamp, COALESCE(parent_version_id, '')
 		FROM query_versions
 		WHERE branch_id = ?
 		ORDER BY timestamp DESC
@@ -238,7 +237,7 @@ func (s *DuckDBStorage) GetBranchHistory(branchID string) ([]*models.QueryVersio
 		var v models.QueryVersion
 		var explainResultsJSON string
 		var statsJSON string
-		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
+		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
 			return nil, fmt.Errorf("scan failed: %w", err)
 		}
 

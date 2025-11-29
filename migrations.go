@@ -42,6 +42,13 @@ func GetMigrations() []Migration {
 				ALTER TABLE branches ADD COLUMN IF NOT EXISTS branch_from_version_id VARCHAR;
 			`,
 		},
+		{
+			Version:     3,
+			Description: "Drop deprecated explain_plan column from query_versions",
+			SQL: `
+				ALTER TABLE query_versions DROP COLUMN IF EXISTS explain_plan;
+			`,
+		},
 	}
 }
 

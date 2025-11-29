@@ -25,10 +25,6 @@ type QueryVersion struct {
 	// (PLAN, PIPELINE, ESTIMATE, AST, SYNTAX, QUERY TREE).
 	ExplainResults []ExplainResult `json:"explainResults"`
 
-	// ExplainPlan is deprecated. Kept for backward compatibility.
-	// Use ExplainResults instead.
-	ExplainPlan string `json:"explainPlan"`
-
 	// ExecutionStats contains flexible execution statistics as key-value pairs.
 	ExecutionStats map[string]interface{} `json:"executionStats"`
 

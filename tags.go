@@ -101,7 +101,7 @@ func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*models.QueryV
 
 	query := `
 		SELECT DISTINCT qv.id, qv.branch_id, qv.query, qv.query_hash,
-		       COALESCE(qv.explain_results, '[]'), qv.explain_plan,
+		       COALESCE(qv.explain_results, '[]'),
 		       COALESCE(qv.execution_stats, '{}'), qv.timestamp,
 		       COALESCE(qv.parent_version_id, '')
 		FROM query_versions qv
@@ -121,7 +121,7 @@ func (s *DuckDBStorage) GetVersionsByTag(branchID, tag string) ([]*models.QueryV
 		var v models.QueryVersion
 		var explainResultsJSON string
 		var statsJSON string
-		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &v.ExplainPlan, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
+		if err := rows.Scan(&v.ID, &v.BranchID, &v.Query, &v.QueryHash, &explainResultsJSON, &statsJSON, &v.Timestamp, &v.ParentVersionID); err != nil {
 			return nil, fmt.Errorf("failed to scan version: %w", err)
 		}
 
