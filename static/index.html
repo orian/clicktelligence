@@ -557,16 +557,27 @@
                         const isStarred = version.tags && version.tags.some(t => t.tagKey === 'system:starred');
                         const starIcon = isStarred ? '⭐' : '☆';
 
+                        // Check if any explain result has an error
+                        const hasError = version.explainResults &&
+                            version.explainResults.some(r => r.error && r.error.length > 0);
+
                         // Get non-system tags for display
                         const displayTags = version.tags ?
                             version.tags.filter(t => !t.tagKey.startsWith('system:')) : [];
 
-                        const tagsHtml = displayTags.length > 0 ?
+                        // Build tags HTML including error label if needed
+                        let tagsItems = [];
+                        if (hasError) {
+                            tagsItems.push(`<span style="background: #5a1e1e; color: #f48771; padding: 0.1rem 0.3rem; font-size: 10px; border-radius: 2px;">err</span>`);
+                        }
+                        tagsItems = tagsItems.concat(displayTags.map(tag => {
+                            const tagText = tag.tagValue ? `${tag.tagKey}=${tag.tagValue}` : tag.tagKey;
+                            return `<span style="background: #3e3e42; color: #d4d4d4; padding: 0.1rem 0.3rem; font-size: 10px; border-radius: 2px;">${tagText}</span>`;
+                        }));
+
+                        const tagsHtml = tagsItems.length > 0 ?
                             `<div style="margin-top: 0.3rem; display: flex; gap: 0.3rem; flex-wrap: wrap;">
-                                ${displayTags.map(tag => {
-                                    const tagText = tag.tagValue ? `${tag.tagKey}=${tag.tagValue}` : tag.tagKey;
-                                    return `<span style="background: #3e3e42; color: #d4d4d4; padding: 0.1rem 0.3rem; font-size: 10px; border-radius: 2px;">${tagText}</span>`;
-                                }).join('')}
+                                ${tagsItems.join('')}
                             </div>` : '';
 
                         // Escape query for use in data attribute
@@ -690,9 +701,38 @@
                     // Create content for each tab
                     version.explainResults.forEach((result, idx) => {
                         const display = idx === selectedIdx ? 'block' : 'none';
-                        const content = result.error ? `ERROR: ${result.error}` : result.output;
-                        html += `<pre class="explain-content" id="explain-content-${idx}"
-                                      style="display: ${display}; margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace;">${content}</pre>`;
+
+                        // ESTIMATE type uses structured data, render as table
+                        if (result.type === 'ESTIMATE' && result.estimate && result.estimate.length > 0) {
+                            html += `<div class="explain-content" id="explain-content-${idx}" style="display: ${display};">
+                                <table style="width: 100%; border-collapse: collapse; font-family: 'Courier New', monospace; font-size: 12px;">
+                                    <thead>
+                                        <tr style="background: #2d2d30; border-bottom: 1px solid #3e3e42;">
+                                            <th style="padding: 0.5rem; text-align: left; color: #569cd6;">Database</th>
+                                            <th style="padding: 0.5rem; text-align: left; color: #569cd6;">Table</th>
+                                            <th style="padding: 0.5rem; text-align: right; color: #569cd6;">Parts</th>
+                                            <th style="padding: 0.5rem; text-align: right; color: #569cd6;">Rows</th>
+                                            <th style="padding: 0.5rem; text-align: right; color: #569cd6;">Marks</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${result.estimate.map(row => `
+                                            <tr style="border-bottom: 1px solid #3e3e42;">
+                                                <td style="padding: 0.4rem 0.5rem; color: #4ec9b0;">${row.database}</td>
+                                                <td style="padding: 0.4rem 0.5rem; color: #dcdcaa;">${row.table}</td>
+                                                <td style="padding: 0.4rem 0.5rem; text-align: right; color: #b5cea8;">${row.parts.toLocaleString()}</td>
+                                                <td style="padding: 0.4rem 0.5rem; text-align: right; color: #b5cea8;">${row.rows.toLocaleString()}</td>
+                                                <td style="padding: 0.4rem 0.5rem; text-align: right; color: #b5cea8;">${row.marks.toLocaleString()}</td>
+                                            </tr>
+                                        `).join('')}
+                                    </tbody>
+                                </table>
+                            </div>`;
+                        } else {
+                            const content = result.error ? `ERROR: ${result.error}` : result.output;
+                            html += `<pre class="explain-content" id="explain-content-${idx}"
+                                          style="display: ${display}; margin: 0; white-space: pre-wrap; font-family: 'Courier New', monospace;">${content}</pre>`;
+                        }
                     });
 
                     results.innerHTML = html;

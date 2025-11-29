@@ -76,18 +76,31 @@ type ExplainConfig struct {
 	Enabled bool `json:"enabled"`
 }
 
+// EstimateRow represents a single row from EXPLAIN ESTIMATE output.
+type EstimateRow struct {
+	Database string `json:"database"`
+	Table    string `json:"table"`
+	Parts    uint64 `json:"parts"`
+	Rows     uint64 `json:"rows"`
+	Marks    uint64 `json:"marks"`
+}
+
 // ExplainResult stores the output from an EXPLAIN execution.
 type ExplainResult struct {
 	// Type identifies which EXPLAIN type produced this result.
 	Type ExplainType `json:"type"`
 
 	// Output contains the text output from ClickHouse.
-	// Empty if execution failed.
+	// Empty if execution failed or for ESTIMATE type.
 	Output string `json:"output"`
 
 	// Error contains the error message if execution failed.
 	// Empty on success.
 	Error string `json:"error,omitempty"`
+
+	// Estimate contains structured data for EXPLAIN ESTIMATE results.
+	// Only populated when Type is ExplainEstimate.
+	Estimate []EstimateRow `json:"estimate,omitempty"`
 }
 
 // BuildExplainQuery constructs the full EXPLAIN query string.

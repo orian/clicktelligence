@@ -6,7 +6,6 @@ import (
 	"crypto/tls"
 	"encoding/hex"
 	"encoding/json"
-	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -97,195 +96,62 @@ func (s *Server) handleCreateBranch(w http.ResponseWriter, r *http.Request) {
 const DefaultMaxExecutionTimeMs = 1345 // 1.345 seconds
 
 func (s *Server) handleExplainQuery(w http.ResponseWriter, r *http.Request) {
-	var req struct {
-		BranchID           string                 `json:"branchId"`
-		Query              string                 `json:"query"`
-		ParentVersionID    string                 `json:"parentVersionId"`
-		ExplainConfigs     []models.ExplainConfig `json:"explainConfigs,omitempty"`
-		ForceAnalyzer      bool                   `json:"forceAnalyzer,omitempty"`
-		ServerSettings     map[string]string      `json:"serverSettings,omitempty"`
-		MaxExecutionTimeMs int                    `json:"maxExecutionTimeMs,omitempty"` // 0 = use default
-	}
+	// 1. Parse request
+	var req ExplainRequest
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		http.Error(w, err.Error(), http.StatusBadRequest)
 		return
 	}
 
-	// Check if we need to auto-branch (editing non-head version)
-	targetBranchID := req.BranchID
-	autoBranched := false
-
-	if req.ParentVersionID != "" {
-		branch, exists := s.storage.GetBranch(req.BranchID)
-		if exists && branch.CurrentVersionID != "" && branch.CurrentVersionID != req.ParentVersionID {
-			// User is editing a non-head version, auto-create new branch
-			newBranchName := fmt.Sprintf("branch-%s", time.Now().Format("2006-01-02-15:04:05"))
-			newBranch, err := s.storage.CreateBranch(newBranchName, req.BranchID, req.ParentVersionID)
-			if err != nil {
-				log.Printf("Failed to auto-create branch: %v", err)
-			} else {
-				targetBranchID = newBranch.ID
-				autoBranched = true
-				log.Printf("Auto-created branch '%s' (ID: %s) from version %s", newBranchName, newBranch.ID, req.ParentVersionID)
-			}
-		}
+	// 2. Check auto-branching
+	branchResult, err := checkAutoBranch(s.storage, req.BranchID, req.ParentVersionID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
 	}
 
-	// Use default configs if none provided
-	configs := req.ExplainConfigs
-	if len(configs) == 0 {
-		log.Println("No EXPLAIN configurations provided, using default set")
-		configs = models.GetDefaultExplainConfigs()
-	}
+	// 3. Get and filter configs
+	configs := getExplainConfigs(req.ExplainConfigs)
+	configs = filterExplainConfigs(configs, req.ServerSettings, req.ForceAnalyzer)
 
-	// Filter out QUERY TREE if enable_analyzer=0 and not forcing
-	if !req.ForceAnalyzer {
-		if analyzerValue, ok := req.ServerSettings["enable_analyzer"]; ok && analyzerValue == "0" {
-			var filteredConfigs []models.ExplainConfig
-			for _, config := range configs {
-				if config.Type != models.ExplainQueryTree {
-					filteredConfigs = append(filteredConfigs, config)
-				} else {
-					log.Println("Skipping EXPLAIN QUERY TREE because enable_analyzer=0")
-				}
-			}
-			configs = filteredConfigs
-		}
-	}
-
-	// Generate query hash and log comment
+	// 4. Generate query hash
 	queryHash := hashQuery(req.Query)
-	logComment := buildLogComment(queryHash)
 
-	// Use default max execution time if not specified
+	// 5. Check cache - return early if query unchanged
+	if cached, ok := checkCachedVersion(s.storage, req.ParentVersionID, queryHash); ok {
+		response := buildExplainResponse(cached, false, nil, true)
+		w.Header().Set("Content-Type", "application/json")
+		json.NewEncoder(w).Encode(response)
+		return
+	}
+
+	// 6. Prepare execution options
 	maxExecutionTimeMs := req.MaxExecutionTimeMs
 	if maxExecutionTimeMs <= 0 {
 		maxExecutionTimeMs = DefaultMaxExecutionTimeMs
 	}
 
-	log.Printf("Executing %d EXPLAIN(s) for query hash: %s (forceAnalyzer=%v, maxExecutionTimeMs=%d)", len(configs), queryHash, req.ForceAnalyzer, maxExecutionTimeMs)
+	log.Printf("Executing %d EXPLAIN(s) for query hash: %s (forceAnalyzer=%v, maxExecutionTimeMs=%d)",
+		len(configs), queryHash, req.ForceAnalyzer, maxExecutionTimeMs)
 
-	// Execute each enabled EXPLAIN configuration
-	var explainResults []models.ExplainResult
-
-	// Check if query is unchanged from parent - if so, return parent version (no-op)
-	if req.ParentVersionID != "" {
-		parentVersion, exists := s.storage.GetVersion(req.ParentVersionID)
-		if exists && parentVersion.QueryHash == queryHash && len(parentVersion.ExplainResults) > 0 {
-			// Check if parent has any errors
-			hasErrors := false
-			for _, result := range parentVersion.ExplainResults {
-				if result.Error != "" {
-					hasErrors = true
-					break
-				}
-			}
-
-			if !hasErrors {
-				// Query unchanged with no errors - return parent version as-is (no-op)
-				log.Printf("Query unchanged, returning existing version %s (no new version created)", req.ParentVersionID)
-
-				response := map[string]interface{}{
-					"version":       parentVersion,
-					"autoBranched":  false,
-					"resultsReused": true,
-				}
-				w.Header().Set("Content-Type", "application/json")
-				json.NewEncoder(w).Encode(response)
-				return
-			}
-			log.Printf("Query unchanged but parent had errors, re-executing EXPLAIN")
-		}
+	// 7. Execute EXPLAINs
+	executor := NewExplainExecutor(s.chConn)
+	opts := ExplainOptions{
+		LogComment:         buildLogComment(queryHash),
+		ForceAnalyzer:      req.ForceAnalyzer,
+		MaxExecutionTimeMs: maxExecutionTimeMs,
 	}
+	results := executor.ExecuteAll(r.Context(), configs, req.Query, opts)
 
-	// Execute EXPLAIN queries
-	for _, config := range configs {
-		if !config.Enabled {
-			continue
-		}
-
-		explainQuery := config.BuildExplainQuery(req.Query, logComment, req.ForceAnalyzer, maxExecutionTimeMs)
-		log.Printf("Running: EXPLAIN %s: %s", config.Type, explainQuery)
-
-		rows, err := s.chConn.Query(context.Background(), explainQuery)
-		if err != nil {
-			errMsg := fmt.Sprintf("Query error: %v", err)
-			explainResults = append(explainResults, models.ExplainResult{
-				Type:  config.Type,
-				Error: errMsg,
-			})
-			log.Printf("Error executing EXPLAIN %s: %v", config.Type, err)
-			continue
-		}
-
-		var explainLines []string
-		for rows.Next() {
-			// EXPLAIN ESTIMATE returns 5 columns: database, table, parts, rows, marks
-			// Other EXPLAIN types return a single text column
-			if config.Type == models.ExplainEstimate {
-				var database, table string
-				var parts, rowCount, marks uint64
-				if err := rows.Scan(&database, &table, &parts, &rowCount, &marks); err != nil {
-					rows.Close()
-					explainResults = append(explainResults, models.ExplainResult{
-						Type:  config.Type,
-						Error: fmt.Sprintf("Scan error: %v", err),
-					})
-					continue
-				}
-				line := fmt.Sprintf("%s.%s: parts=%d, rows=%d, marks=%d", database, table, parts, rowCount, marks)
-				explainLines = append(explainLines, line)
-			} else {
-				var line string
-				if err := rows.Scan(&line); err != nil {
-					rows.Close()
-					explainResults = append(explainResults, models.ExplainResult{
-						Type:  config.Type,
-						Error: fmt.Sprintf("Scan error: %v", err),
-					})
-					continue
-				}
-				explainLines = append(explainLines, line)
-			}
-		}
-		rows.Close()
-
-		output := strings.Join(explainLines, "\n")
-		explainResults = append(explainResults, models.ExplainResult{
-			Type:   config.Type,
-			Output: output,
-		})
-	}
-
-	// Create version
-	version := &models.QueryVersion{
-		ID:              uuid.New().String(),
-		BranchID:        targetBranchID,
-		Query:           req.Query,
-		QueryHash:       queryHash,
-		ExplainResults:  explainResults,
-		ExecutionStats:  make(map[string]interface{}),
-		Timestamp:       time.Now(),
-		ParentVersionID: req.ParentVersionID,
-	}
-
+	// 8. Create and save version
+	version := createVersion(branchResult.TargetBranchID, &req, queryHash, results)
 	if err := s.storage.SaveVersion(version); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return
 	}
 
-	// Include branch info in response if auto-branched
-	response := map[string]interface{}{
-		"version":       version,
-		"autoBranched":  autoBranched,
-		"resultsReused": false,
-	}
-
-	if autoBranched {
-		branch, _ := s.storage.GetBranch(targetBranchID)
-		response["newBranch"] = branch
-	}
-
+	// 9. Build and send response
+	response := buildExplainResponse(version, branchResult.AutoBranched, branchResult.NewBranch, false)
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(response)
 }
